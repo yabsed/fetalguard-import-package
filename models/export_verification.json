@@ -1,0 +1,25 @@
+{
+  "torch": "1.10.2+cu113",
+  "xgboost": "1.6.2",
+  "xgboost_features": 44,
+  "xgboost_roundtrip_exact": true,
+  "yolo_shape": [
+    1,
+    25200,
+    6
+  ],
+  "yolo_max_abs_error": 0.0,
+  "yolo_input": [
+    1,
+    3,
+    640,
+    640
+  ],
+  "yolo_fused": false,
+  "artifacts": {
+    "models/official_xgboost/xgb_clf.model": "ac319c9239770404adfd177a01a93fd1f648c659879bfa96265fc975f07994e1",
+    "models/official_xgboost/xgb_clf.json": "ee465487ab7f1b8a5b3a4a71eda0998c06a0417f5c67e497b6f9813f554695f0",
+    "models/official_yolo/best.pt": "aaa25a0858848665b99a4becc05c6195e2af3cf08167dcc8960a113dc51d3cfc",
+    "models/official_yolo/inference.torchscript": "5f9058800d6b979ecdb799a4ab52b05445a9ac79f7deaad66049032ee03f0979"
+  }
+}

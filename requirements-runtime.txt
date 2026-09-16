@@ -1,0 +1,15 @@
+# Subset of the pre-requested Python 3.10 environment; no new dependency requests.
+# Provision BEFORE entering the safe zone. The runner never runs pip.
+numpy==2.2.6
+pandas==2.3.3
+scipy==1.15.3
+scikit-learn==1.7.2
+catboost==1.2.10
+xgboost==3.2.0
+torch==2.4.1
+matplotlib==3.10.8
+pillow==11.3.0
+opencv-python-headless==4.10.0.84
+tabulate==0.9.0
+ipywidgets==8.1.9
+ipykernel==6.29.5

@@ -1,0 +1,237 @@
+[
+  {
+    "source": "shared/src/fetalguard/io.py",
+    "destination": "fg/signal_io.py",
+    "original_sha256": "fd2048fe5a5501917cade1b8519e52b0c741c02551e0512e0a53eef0b525913e"
+  },
+  {
+    "source": "project/experiment-8/3-lightweight-cnn/ctgnet_mini.py",
+    "destination": "fg/ctgnet.py",
+    "original_sha256": "9882c293049098d5fc0d6d447e4d98fa3271f53139b93d5729269a7fa3c19d99"
+  },
+  {
+    "source": "project/experiment-15/2-google-reproduction/features.py",
+    "destination": "fg/feature_rules.py",
+    "original_sha256": "c521b51de0a800bacd77a34463cbe72e251f924449eb8d15f5248435eed2d146"
+  },
+  {
+    "source": "project/experiment-15/2-google-reproduction/preprocess.py",
+    "destination": "fg/preprocessing.py",
+    "original_sha256": "10ec17718060cb9f03c68b9f6ee45fdf7f6819217065bd3684b4e356742c4781"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아상태진단분류모델_소스코드/model/xgb_clf.model",
+    "destination": "models/official_xgboost/xgb_clf.model",
+    "original_sha256": "ac319c9239770404adfd177a01a93fd1f648c659879bfa96265fc975f07994e1"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/weights/best.pt",
+    "destination": "models/official_yolo/best.pt",
+    "original_sha256": "aaa25a0858848665b99a4becc05c6195e2af3cf08167dcc8960a113dc51d3cfc"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아상태진단분류모델_소스코드/eval.py",
+    "destination": "third_party/classifier/eval.py",
+    "original_sha256": "e6ba4e368a44b8b5da86456b1500c4db862ff911f1db502732fba60c83f19520"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아상태진단분류모델_소스코드/prediction.py",
+    "destination": "third_party/classifier/prediction.py",
+    "original_sha256": "8df0135d4f37302e8011a120e694f69561b63f9e628ef4e0aa8d6fc152c047b4"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아상태진단분류모델_소스코드/preprocess.py",
+    "destination": "third_party/classifier/preprocess.py",
+    "original_sha256": "43261315b50a93b81e2647022cad8296524acdb26f2943dd24b446d8f54772d2"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아상태진단분류모델_소스코드/train.py",
+    "destination": "third_party/classifier/train.py",
+    "original_sha256": "cd4e9d2576ae41d3c04e6b672b276e2a816cca409aab54d11dc57b2599a7342e"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아상태진단분류모델_소스코드/utils.py",
+    "destination": "third_party/classifier/utils.py",
+    "original_sha256": "7b8bc9b42afbeb1817443fc9d97251df0861b25a57ef5b4124dac5fe56537742"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/detect.py",
+    "destination": "third_party/yolov5/detect.py",
+    "original_sha256": "1bbde28ec2f0be07947de6f267aeb2ba6d290fcf7702ff7b2932a8558b57a913"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/export.py",
+    "destination": "third_party/yolov5/export.py",
+    "original_sha256": "084b2f985e1522d78c3f6b237ca76115e9d0c3d59aa5f056c7450e68381a132d"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/models/common.py",
+    "destination": "third_party/yolov5/models/common.py",
+    "original_sha256": "25b06b2064417eec5db204411639153e2fde457b07824b953f1f083f0b4ecf1b"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/models/experimental.py",
+    "destination": "third_party/yolov5/models/experimental.py",
+    "original_sha256": "544e3cda1bd4ce51e027411be70f9a3f0eafb43f9a7f64dca2a7812baa963201"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/models/yolo.py",
+    "destination": "third_party/yolov5/models/yolo.py",
+    "original_sha256": "f980f2206e7225f2653d046ed888e230dd7cd8e51b5952b056e6823bea68f84f"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/train.py",
+    "destination": "third_party/yolov5/train.py",
+    "original_sha256": "27d917b309799e743aba19054c1ccc7b6b72c46641ae7bc4b7d301a43d464985"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/__init__.py",
+    "destination": "third_party/yolov5/utils/__init__.py",
+    "original_sha256": "f153151c2d1a9582159eec542b5f8b57f6cd0145c3a5ab3e37ac3bf1105f7758"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/augmentations.py",
+    "destination": "third_party/yolov5/utils/augmentations.py",
+    "original_sha256": "43833c4fc8c6431c2959d2574543a1a8c326e8b7de272883eedd2da279fdc231"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/autoanchor.py",
+    "destination": "third_party/yolov5/utils/autoanchor.py",
+    "original_sha256": "dfc2e2e6e66af5fd83afb8b2615f28f383c107269c6b89c7dc5e0a86a7466d05"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/autobatch.py",
+    "destination": "third_party/yolov5/utils/autobatch.py",
+    "original_sha256": "5462f6a4e31a93dd412f4a1670e79aea127100a4f195b92d3aafd600947b59c8"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/callbacks.py",
+    "destination": "third_party/yolov5/utils/callbacks.py",
+    "original_sha256": "33e2073887be212cc8739d98c698919339e97645b1e28ba9f594886fbcda83b7"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/dataloaders.py",
+    "destination": "third_party/yolov5/utils/dataloaders.py",
+    "original_sha256": "3a7218532a835b823cdc16eab5f56e6f4e60d19403ef99af2e8b205f90f93307"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/downloads.py",
+    "destination": "third_party/yolov5/utils/downloads.py",
+    "original_sha256": "618f8d5752a6f618e8402ddbd7261112dfd015a25f22a67916dad379c589b601"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/general.py",
+    "destination": "third_party/yolov5/utils/general.py",
+    "original_sha256": "5250ed6a5beebbe5b8cc1bd8e9610b5ef5c77c81250f897df173af9af1cf63b2"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/loggers/__init__.py",
+    "destination": "third_party/yolov5/utils/loggers/__init__.py",
+    "original_sha256": "139cad04544d067b610a85ba4dcaf74f73a18d226ead2cb903339c089b2293aa"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/loggers/clearml/__init__.py",
+    "destination": "third_party/yolov5/utils/loggers/clearml/__init__.py",
+    "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/loggers/clearml/clearml_utils.py",
+    "destination": "third_party/yolov5/utils/loggers/clearml/clearml_utils.py",
+    "original_sha256": "27e11a1f7dd2d22757bd9de0edc5f1890f455ad0a90494a292597ebb30b8b1c4"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/loggers/clearml/hpo.py",
+    "destination": "third_party/yolov5/utils/loggers/clearml/hpo.py",
+    "original_sha256": "c8947371f40250c5943fcd07619ce92bcb99285db78686385aa4616bfd52e3d5"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/loggers/comet/__init__.py",
+    "destination": "third_party/yolov5/utils/loggers/comet/__init__.py",
+    "original_sha256": "19c5b872e8e69cb59ec62441e8db4d76be783f2116b3cfc280a2c99e487b7eec"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/loggers/comet/comet_utils.py",
+    "destination": "third_party/yolov5/utils/loggers/comet/comet_utils.py",
+    "original_sha256": "39f79b5c114e325b5b4dcb9038ae51262d3a690f67db2d123283fc428bb58628"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/loggers/comet/hpo.py",
+    "destination": "third_party/yolov5/utils/loggers/comet/hpo.py",
+    "original_sha256": "60cb7aee290fb92e3410a9df6356d9a08f2d0ac727062f030d623a28fa7852d8"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/loss.py",
+    "destination": "third_party/yolov5/utils/loss.py",
+    "original_sha256": "61a82e77b1dce4651b3365510fa82102ac0f8bc33b2e526329f170f673b3f1de"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/metrics.py",
+    "destination": "third_party/yolov5/utils/metrics.py",
+    "original_sha256": "105109d3cb98e5fba649eda552450b4f592ea7aa5fa8b2bcd8071399a76a295c"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/plots.py",
+    "destination": "third_party/yolov5/utils/plots.py",
+    "original_sha256": "87ed8b9538eea26cc794e2a849430fd27a41dff5a2bf6f4e90854d194e18b0c3"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/segment/__init__.py",
+    "destination": "third_party/yolov5/utils/segment/__init__.py",
+    "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/segment/augmentations.py",
+    "destination": "third_party/yolov5/utils/segment/augmentations.py",
+    "original_sha256": "debd7ec1689a776e439bc83f33ece0cd922ccd8e1cb59c171ebef17000476c57"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/segment/dataloaders.py",
+    "destination": "third_party/yolov5/utils/segment/dataloaders.py",
+    "original_sha256": "532d41fb98272371e66f5d8387b092aee4fc8e129d42d64484a7a449d03e7b2a"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/segment/general.py",
+    "destination": "third_party/yolov5/utils/segment/general.py",
+    "original_sha256": "f9cc0f71a13a73e7e1b28f9275501737b8af66762d348acf91b443c5375bf35f"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/segment/loss.py",
+    "destination": "third_party/yolov5/utils/segment/loss.py",
+    "original_sha256": "d24901d7c899c0028e001204e62f890a27acd3bf052fd3ff4c3a5b788160bc27"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/segment/metrics.py",
+    "destination": "third_party/yolov5/utils/segment/metrics.py",
+    "original_sha256": "f5074d71251d3b734fd35c38519d6adb71a43feaa3a8dece4e8f46bfb8be21b6"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/segment/plots.py",
+    "destination": "third_party/yolov5/utils/segment/plots.py",
+    "original_sha256": "29c2c952231f49d974e19b8b9218c3ef79da099c790ba57ffd13920f04225906"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/utils/torch_utils.py",
+    "destination": "third_party/yolov5/utils/torch_utils.py",
+    "original_sha256": "abe7e30ab6ae002bb53b11fe23fe492c7c863c88756625456d38bbb5ddd7b54e"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/1.모델소스코드/태아이상시점탐지모델_소스코드/model/yolov5/val.py",
+    "destination": "third_party/yolov5/val.py",
+    "original_sha256": "c74a614ad29bdf3a487daa1e057be6663ce4393d9ffcd97730eea5cd6cc230b8"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/3.모델정보 및 라이선스 가이드/LICENSE",
+    "destination": "third_party/LICENSE",
+    "original_sha256": "0660849177eba18161aa8d4b851f63dd03bfdf0eeba5a431a9f47588a808039c"
+  },
+  {
+    "source": "dataset/korean-ctg/docs/3.모델정보 및 라이선스 가이드/README.md",
+    "destination": "third_party/AIHUB_README.md",
+    "original_sha256": "9cd99d1b077ff52713cfd68b99722c4bd127e22e2030713bbae81b5a015ccd96"
+  },
+  {
+    "source": "본선/01-패키지-사전신청-회신/requirements-daejeon-py310.txt",
+    "destination": "requirements-approved.txt",
+    "original_sha256": "1d55ff57d87b04258af41d155de7a5a5c2c37c1edcbe628cfc8d826142838925"
+  }
+]

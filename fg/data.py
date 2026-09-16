@@ -1,0 +1,210 @@
+"""Discover Training/Validation/Test or evaluation directories, never hardcode N.
+
+The original source split is inventoried; all research splits are re-created
+by mother. Identical duplicate JSONs are deduplicated, disagreements fail.
+"""
+from __future__ import annotations
+
+from collections import Counter
+from pathlib import Path
+import re
+
+import numpy as np
+import pandas as pd
+from PIL import Image
+
+from .common import numeric, note, read_json, sha256, write_json
+from .features import extract_segment, interpolate_signal, CAT28
+from .feature_rules import preprocess_for_features
+from .signal_io import load_case_signal, parse_window_abnormality
+
+PRENATAL = ["Mother.Height", "Mother.Weight", "Mother.Gravida", "Mother.Para", "Mother.SBP", "Mother.DBP",
+            "Mother.GHTN", "Mother.Hypertension", "Mother.GDM", "Mother.DM", "Mother.pre-eclampsia"]
+EMR_FEATURES = ["emr_" + name for name in PRENATAL] + ["maternal_age", "gestational_age"]
+OFFICIAL_COLUMNS = PRENATAL + ["Delivery", "GA.wks", "GA.day", "FetalDistress", "FGR", "Placenta.Complication",
+    "Sex", "Weight", "Height", "HC", "Jaundice", "prematurity", "LBW", "Anomaly"] + [f"Anomaly{i}" for i in range(1, 9)] + [
+    "twins", "min_fhr", "max_fhr", "median_fhr", "mean_fhr", "min_toco", "max_toco", "median_toco", "mean_toco",
+    "Mother.age", "prop_abnormal"]
+
+
+def discover(root):
+    root = Path(root)
+    catalog = {k: {} for k in ("annotation_person", "labels", "emr", "images")}
+    fingerprints, duplicate_count = [], 0
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() == ".json" and path.parent.name in catalog and path.parent.name != "images":
+            kind = path.parent.name
+        elif path.suffix.lower() == ".png" and path.parent.name == "refine_images":
+            kind = "images"
+        else:
+            continue
+        digest = sha256(path)
+        fingerprints.append({"path": str(path.relative_to(root)), "size": path.stat().st_size, "sha256": digest})
+        previous = catalog[kind].get(path.stem)
+        if previous:
+            duplicate_count += 1
+            if previous["sha256"] != digest:
+                if kind == "images":
+                    raise ValueError(f"Conflicting duplicate image: {path} / {previous['path']}")
+                a, b = read_json(previous["path"]), read_json(path)
+                # The classification distribution omits boxes present in detection distribution.
+                if kind == "labels":
+                    a_box, b_box = a.pop("Bbox", None), b.pop("Bbox", None)
+                    if a == b and (a_box == b_box or not a_box or not b_box):
+                        if b_box and not a_box:
+                            catalog[kind][path.stem] = {"path": str(path), "sha256": digest}
+                        continue
+                    raise ValueError(f"Conflicting duplicate labels/boxes: {path} / {previous['path']}")
+                if a != b:
+                    raise ValueError(f"Conflicting duplicate {kind}: {path} / {previous['path']}")
+            continue
+        catalog[kind][path.stem] = {"path": str(path), "sha256": digest}
+    if not catalog["annotation_person"] or not catalog["labels"]:
+        raise ValueError("annotation_person/*.json 및 labels/*.json을 찾지 못했습니다. 압축 해제한 데이터 상위 폴더를 선택하세요.")
+    return catalog, fingerprints, duplicate_count
+
+
+def bbox_check(rid, label, image_path):
+    flags = parse_window_abnormality(label, len(str(label.get("Abnormality", "")).split("_")))
+    boxes = label.get("Bbox") or []
+    row = dict(record_id=rid, n_boxes=len(boxes), n_segments=len(flags), n_abnormal=int(flags.sum()),
+               image_present=bool(image_path), checked=False, valid=None, reason="no_boxes")
+    if not boxes:
+        # No-box records in the classification-only subset cannot establish annotation equivalence.
+        row["reason"] = "positive_without_boxes" if flags.any() else "normal_without_boxes"
+        return row
+    if not image_path:
+        row["reason"] = "image_missing"
+        return row
+    with Image.open(image_path) as image:
+        width, height = image.size
+    positions, errors = [], []
+    for box in boxes:
+        if len(box) != 6:
+            errors.append("box_shape")
+            continue
+        x1, y1, x2, y2, w, h = map(float, box)
+        step = width / len(flags)
+        pos = int(round(x1 / step))
+        positions.append(pos)
+        if abs(x1 - pos * step) > 0.5 or abs(x2 - (pos + 1) * step) > 0.5:
+            errors.append("segment_boundary")
+        if abs(y1) > 0.5 or abs(y2 - height) > 0.5 or w != width or h != height:
+            errors.append("image_dimensions")
+    if sorted(positions) != list(np.flatnonzero(flags)):
+        errors.append("flag_positions")
+    row.update(checked=True, valid=not errors, reason=",".join(sorted(set(errors))) or "ok")
+    return row
+
+
+def official_row(rid, emr, label, annotation, case, mode):
+    row = {k: numeric(emr.get(k, label.get(k))) for k in OFFICIAL_COLUMNS}
+    birth, mother_birth = numeric(emr.get("Birth Date")), numeric(emr.get("Mother.Birth Date"))
+    row["Mother.age"] = birth // 100 - mother_birth // 100 + 1
+    row["prop_abnormal"] = round(str(label["Abnormality"]).split("_").count("1") / case.selected_segment_count, 1)
+    for channel in ("fhr", "toco"):
+        if mode == "original":
+            values = np.asarray([int(s) for s in re.findall(r"\d+", "".join(str(s[channel]) for s in annotation["data"]))], float)
+        else:
+            values = getattr(case, channel)
+        row.update({f"min_{channel}": values.min(), f"max_{channel}": values.max(),
+                    f"median_{channel}": int(np.median(values)), f"mean_{channel}": int(values.mean())})
+    return dict(record_id=rid, target=numeric(label.get("Emergency")), **row)
+
+
+def prepare(catalog, out, cfg):
+    out.mkdir(parents=True, exist_ok=True)
+    bbox = [bbox_check(rid, read_json(entry["path"]), catalog["images"].get(rid, {}).get("path"))
+            for rid, entry in catalog["labels"].items()]
+    pd.DataFrame(bbox).to_csv(out / "bbox_audit.csv", index=False)
+    failed = [r for r in bbox if r["checked"] and not r["valid"]]
+    if failed and cfg["strict_bbox"]:
+        raise ValueError(f"Bbox 검증 {len(failed)}건 불일치. bbox_audit.csv 확인. strict_bbox=false는 별도 분석을 명시적으로 허용할 때만 사용하세요.")
+    records, segments, signals, exclusions, original, corrected, placeholders = [], [], [], [], [], [], Counter()
+    emr_fields = Counter()
+    emr_missing = Counter()
+    annotations = catalog["annotation_person"]
+    for number, (rid, entry) in enumerate(annotations.items(), 1):
+        if rid not in catalog["labels"]:
+            raise ValueError(f"Annotation has no label: {rid}")
+        annotation = read_json(entry["path"])
+        label = read_json(catalog["labels"][rid]["path"])
+        if str(label.get("ID")) != rid:
+            raise ValueError(f"Label ID mismatch: {rid}")
+        emr = read_json(catalog["emr"][rid]["path"]) if rid in catalog["emr"] else {}
+        if emr and str(emr.get("ID")) != rid:
+            raise ValueError(f"EMR ID mismatch: {rid}")
+        case = load_case_signal(rid, Path(entry["path"]).parent)
+        flags = parse_window_abnormality(label, case)
+        mid = str(emr.get("Mother.de-identification_ID", "")).strip()
+        if not mid or mid in {"9999", "nan", "None"}:
+            raise ValueError(f"Missing mother ID for {rid}; refusing unsafe record-based split")
+        rec = dict(record_id=rid, mother_id=mid, site=case.site, is_twin=case.is_twin, n_segments=len(flags),
+                   abnormal_fraction=float(flags.mean()), any_abnormal=int(flags.any()),
+                   longest_abnormal_run=max((len(x) for x in ''.join(map(str, flags)).split('0')), default=0),
+                   image_path=catalog["images"].get(rid, {}).get("path", ""))
+        rec.update({"emr_" + k: numeric(v) for k, v in emr.items() if k != "ID"})
+        rec.update({"label_" + k: numeric(v) for k, v in label.items() if k not in {"ID", "Bbox", "Abnormality"}})
+        birth, mbirth = numeric(emr.get("Birth Date")), numeric(emr.get("Mother.Birth Date"))
+        rec["maternal_age"] = birth // 100 - mbirth // 100 + 1
+        rec["gestational_age"] = numeric(emr.get("GA.wks")) + numeric(emr.get("GA.day", 0)) / 7
+        for field in emr:
+            emr_fields[field] += 1
+            emr_missing[field] += int(not np.isfinite(numeric(emr[field])))
+        for part in annotation.get("data", []):
+            for key in ("baseline", "baseline_var", "accel", "decel", "cervix"):
+                if key in part:
+                    placeholders[(key, str(part[key]))] += 1
+        kept, missing_values = 0, []
+        for index, (fhr, toco, target) in enumerate(zip(case.fhr_windows, case.toco_windows, flags)):
+            if not np.isclose(case.dt * len(fhr), 300):
+                raise ValueError(f"{rid}/{index}: expected 300s window, got {case.dt * len(fhr)}s")
+            if not np.isclose(case.dt, 2) or len(fhr) != 150:
+                raise ValueError(f"{rid}: this approved CNN contract needs 0.5Hz / 150 samples, got dt={case.dt}, N={len(fhr)}")
+            if (fhr < 0).any():
+                raise ValueError(f"{rid}: negative FHR")
+            missing = float((fhr == 0).mean())
+            missing_values.append(missing)
+            if missing > cfg["max_missing_fraction"]:
+                exclusions.append(dict(record_id=rid, seg_idx=index, reason="fhr_missing_gt_threshold", missing_fraction=missing))
+                continue
+            clean_f, clean_t = preprocess_for_features(fhr, toco, 1 / case.dt)
+            factors = extract_segment(clean_f, clean_t, 1 / case.dt)
+            if not np.isfinite(list(factors.values())).all():
+                raise ValueError(f"Nonfinite Cat28: {rid}/{index}")
+            segments.append(dict(record_id=rid, mother_id=mid, site=case.site, seg_idx=index, target=int(target),
+                                 missing_fraction=missing, record_all_normal=int(not flags.any()), **factors))
+            signals.append(interpolate_signal(fhr, toco))
+            kept += 1
+        rec.update(n_kept=kept, missing_fraction=float(np.mean(missing_values)))
+        records.append(rec)
+        if emr:
+            original.append(official_row(rid, emr, label, annotation, case, "original"))
+            corrected.append(official_row(rid, emr, label, annotation, case, "corrected"))
+        if number % 250 == 0:
+            note(f"인자 추출 {number:,}/{len(annotations):,} records; {len(segments):,} segments")
+    if not signals:
+        raise ValueError("No usable signal segments")
+    pd.DataFrame(records).to_csv(out / "records.csv", index=False)
+    pd.DataFrame(segments).to_csv(out / "segments.csv", index=False)
+    np.save(out / "signals.npy", np.stack(signals))
+    pd.DataFrame(exclusions, columns=["record_id", "seg_idx", "reason", "missing_fraction"]).to_csv(out / "exclusions.csv", index=False)
+    pd.DataFrame(original, columns=["record_id", "target"] + OFFICIAL_COLUMNS).to_csv(out / "official_original.csv", index=False)
+    pd.DataFrame(corrected, columns=["record_id", "target"] + OFFICIAL_COLUMNS).to_csv(out / "official_corrected.csv", index=False)
+    pd.DataFrame([dict(field=k, value=v, count=n) for (k, v), n in placeholders.items()]).to_csv(out / "annotation_fields.csv", index=False)
+    pd.DataFrame([dict(field=k, present=emr_fields[k], missing=emr_missing[k], missing_or_absent=len(records) - emr_fields[k] + emr_missing[k])
+                  for k in sorted(emr_fields)]).to_csv(out / "emr_missingness.csv", index=False)
+    pd.DataFrame(records).groupby("site").agg(records=("record_id", "size"), mothers=("mother_id", "nunique"),
+        positive_records=("any_abnormal", "sum"), twins=("is_twin", "sum")).to_csv(out / "site_inventory.csv")
+    summary = dict(records=len(records), mothers=len({r["mother_id"] for r in records}), segments=len(segments),
+                   positive_segments=sum(s["target"] for s in segments), excluded_segments=len(exclusions),
+                   records_without_usable_segments=sum(r["n_kept"] == 0 for r in records),
+                   label_only_records=sorted(set(catalog["labels"]) - set(annotations)),
+                   bbox_checked=sum(r["checked"] for r in bbox), bbox_failed=len(failed),
+                   bbox_unverified=sum(not r["checked"] and r["n_abnormal"] > 0 for r in bbox),
+                   channel_contract=["FHR", "TOCO"], sample_interval_seconds=2,
+                   features=CAT28)
+    write_json(out / "summary.json", summary)
+    note(f"데이터 준비 완료: {len(records):,} records / {len(segments):,} segments")

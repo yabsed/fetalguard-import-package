@@ -1,0 +1,42 @@
+{
+  "data_root": "",
+  "output_root": "",
+  "profile": "full",
+  "device": "auto",
+  "threads": 4,
+  "seed": 42,
+  "test_folds": 10,
+  "validation_folds": 9,
+  "max_missing_fraction": 0.3,
+  "strict_bbox": true,
+  "official_models": true,
+  "cnn": true,
+  "profiles": {
+    "full": {
+      "seeds": [42, 43, 44],
+      "cv_folds": 5,
+      "tree_iterations": 1000,
+      "tree_patience": 80,
+      "cnn_widths": [8, 16, 32, 64, 128],
+      "cnn_norms": ["channel_maxabs", "per_segment_z"],
+      "cnn_epochs": 1000,
+      "cnn_patience": 150,
+      "batch_size": 256,
+      "bootstrap": 2000,
+      "shap_samples": 2000
+    },
+    "mock": {
+      "seeds": [42],
+      "cv_folds": 2,
+      "tree_iterations": 30,
+      "tree_patience": 10,
+      "cnn_widths": [8, 64],
+      "cnn_norms": ["channel_maxabs", "per_segment_z"],
+      "cnn_epochs": 3,
+      "cnn_patience": 2,
+      "batch_size": 256,
+      "bootstrap": 50,
+      "shap_samples": 100
+    }
+  }
+}
