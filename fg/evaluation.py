@@ -1,6 +1,7 @@
 """Validation-only operating points and paired mother-cluster intervals."""
 import numpy as np
 import pandas as pd
+from pathlib import Path
 from sklearn.model_selection import StratifiedGroupKFold
 from .common import require_two_classes, write_json, table
 
@@ -18,13 +19,25 @@ def group_folds(frame, n_splits, seed, target="target"):
 def create_splits(data_dir, out, cfg):
     records = table(data_dir / "records.csv")
     usable = records[records.n_kept > 0].reset_index(drop=True)
-    dev, test = next(group_folds(usable, cfg["test_folds"], cfg["seed"], "any_abnormal"))
-    train, val = next(group_folds(usable.iloc[dev].reset_index(drop=True), cfg["validation_folds"], cfg["seed"] + 1, "any_abnormal"))
-    usable["split"] = "test"
-    usable.loc[dev[train], "split"] = "train"
-    usable.loc[dev[val], "split"] = "val"
+    prior_file = cfg.get("prior_cohort_file")
+    known = set()
+    if prior_file:
+        prior = pd.read_csv(Path(prior_file), dtype=str, keep_default_na=False)
+        if "mother_id" not in prior or prior.mother_id.str.strip().isin(["", "nan", "None", "9999"]).any():
+            raise ValueError("Prior cohort CSV needs nonmissing mother_id; known mothers go to training only")
+        known = set(prior.mother_id.str.strip())
+    usable["prior_seen"] = usable.mother_id.isin(known)
+    eligible = usable.index[~usable.prior_seen].to_numpy()
+    fresh = usable.loc[eligible].reset_index(drop=True)
+    if fresh.mother_id.nunique() < max(cfg["test_folds"], cfg["validation_folds"] + 1):
+        raise ValueError("Too few previously unseen mothers for validation/test; prior cohort cannot form a new confirmation cohort")
+    dev, test = next(group_folds(fresh, cfg["test_folds"], cfg["seed"], "any_abnormal"))
+    train, val = next(group_folds(fresh.iloc[dev].reset_index(drop=True), cfg["validation_folds"], cfg["seed"] + 1, "any_abnormal"))
+    usable["split"] = "train"
+    usable.loc[eligible[test], "split"] = "test"
+    usable.loc[eligible[dev[val]], "split"] = "val"
     out.mkdir(parents=True, exist_ok=True)
-    usable[["record_id", "mother_id", "site", "split"]].to_csv(out / "records.csv", index=False)
+    usable[["record_id", "mother_id", "site", "split", "prior_seen"]].to_csv(out / "records.csv", index=False)
     segments = table(data_dir / "segments.csv")
     segments = segments.merge(usable[["record_id", "split"]], on="record_id", how="left", validate="many_to_one")
     for split in ("train", "val", "test"):
@@ -34,6 +47,12 @@ def create_splits(data_dir, out, cfg):
         "mothers": int(usable.loc[usable.split == split, "mother_id"].nunique()),
         "segments": int((segments.split == split).sum()),
         "positives": int(segments.loc[segments.split == split, "target"].sum())} for split in ("train", "val", "test")})
+    write_json(out / "cohort_history.json", dict(status="checked" if prior_file else "not_checked",
+        policy="previously_seen_mothers_training_only", supplied_mothers=len(known),
+        matched_mothers=int(usable.loc[usable.prior_seen, "mother_id"].nunique()),
+        matched_validation_mothers=int(usable.loc[usable.prior_seen & usable.split.eq("val"), "mother_id"].nunique()),
+        matched_test_mothers=int(usable.loc[usable.prior_seen & usable.split.eq("test"), "mother_id"].nunique()),
+        note="No prior cohort file means previous exposure was not checked; it does not establish a new untouched cohort."))
 
 
 def load_segments(run):
@@ -99,11 +118,17 @@ class Scorer:
             false_alarms_per_normal_hour=np.sum(w * self.normal_segments * self.alarm) / normal_hours if normal_hours else np.nan)
 
 
+def cohort_counts(frame):
+    return dict(n=len(frame), mothers=int(frame.mother_id.nunique()), positives=int(frame.target.sum()),
+        positive_mothers=int(frame.loc[frame.target == 1, "mother_id"].nunique()),
+        negative_mothers=int(frame.loc[frame.target == 0, "mother_id"].nunique()))
+
+
 def evaluate(frame, scores, threshold, n_boot=0, seed=42):
     scorer = Scorer(frame, scores, threshold)
     point = scorer.compute()
     if point is None:
-        return {"status": "insufficient_classes", "n": len(frame)}
+        return {"status": "insufficient_classes", **cohort_counts(frame)}
     values = {k: [] for k in point}
     rng = np.random.default_rng(seed)
     for _ in range(n_boot):
@@ -113,7 +138,7 @@ def evaluate(frame, scores, threshold, n_boot=0, seed=42):
             for k, v in result.items():
                 if np.isfinite(v):
                     values[k].append(v)
-    return dict(status="ok", n=len(frame), mothers=len(scorer.mothers), point=point,
+    return dict(status="ok", **cohort_counts(frame), point=point,
                 ci95={k: list(np.quantile(v, [0.025, 0.975])) if v else None for k, v in values.items()},
                 bootstrap_valid={k: len(v) for k, v in values.items()})
 
@@ -122,7 +147,7 @@ def paired(frame, left, right, n_boot, seed=42):
     a, b = Scorer(frame, left, 0.5), Scorer(frame, right, 0.5)
     pa, pb = a.compute(), b.compute()
     if pa is None or pb is None:
-        return {"status": "insufficient_classes"}
+        return {"status": "insufficient_classes", **cohort_counts(frame)}
     keys = ["auroc", "auprc", "brier"]
     values = {k: [] for k in keys}
     rng = np.random.default_rng(seed)
@@ -132,7 +157,7 @@ def paired(frame, left, right, n_boot, seed=42):
         if av is not None and bv is not None:
             for k in keys:
                 values[k].append(av[k] - bv[k])
-    return {"status": "ok", "direction": "left_minus_right", "metrics": {
+    return {"status": "ok", **cohort_counts(frame), "direction": "left_minus_right", "metrics": {
         k: {"difference": pa[k] - pb[k], "ci95": list(np.quantile(values[k], [0.025, 0.975])) if values[k] else None,
             "valid_bootstrap": len(values[k])} for k in keys},
         "interpretation": "A CI containing zero is inconclusive, not proof of equivalence."}

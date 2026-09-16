@@ -257,10 +257,11 @@ def extract_features(fhr, uc, fs=FS):
     return np.array([feats[k] for k in FEATURE_NAMES], dtype=np.float32)
 
 
-def preprocess_for_features(fhr, uc, fs=FS):
+def preprocess_for_features(fhr, uc, fs=FS, smooth_seconds=30):
     """특성추출 전용 전처리 (A.2 명시 순서).
 
-    짧은 결측 보간(≤15초) → 120포인트(30초) rolling 평활 → 긴 결측도 선형 보간.
+    짧은 결측 보간 → 30초 rolling 평활 → 긴 결측도 선형 보간.
+    smooth_seconds=0 팔은 같은 결측 정책을 유지한 채 평활만 생략한다.
 
     평활은 논문의 "smoothed with a rolling window of 120 time points"를 결측 표지가
     있는 신호의 rolling mean으로 구현한다(`preprocess.smooth_masked`) — 유효 표본만
@@ -274,9 +275,11 @@ def preprocess_for_features(fhr, uc, fs=FS):
     """
     fhr = impute_short_gaps(fhr, int(15 * fs))
     uc = impute_short_gaps(uc, int(15 * fs))
-    fhr = smooth_masked(fhr, int(30 * fs), fhr == 0)
-    uc = smooth_masked(uc, int(30 * fs), uc == 0)
+    if smooth_seconds not in (0, 30):
+        raise ValueError("Predeclared feature smoothing arms are 0 and 30 seconds")
+    if smooth_seconds:
+        fhr = smooth_masked(fhr, int(smooth_seconds * fs), fhr == 0)
+        uc = smooth_masked(uc, int(smooth_seconds * fs), uc == 0)
     fhr = impute_short_gaps(fhr, len(fhr))   # 남은 결측 전부 선형 보간
     uc = impute_short_gaps(uc, len(uc))
     return fhr, uc
-

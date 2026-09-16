@@ -31,6 +31,7 @@ def config_args():
     parser.add_argument("--profile", choices=["full", "mock"])
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--threads", type=int)
+    parser.add_argument("--prior-cohort", type=Path, help="이미 분석한 산모 mother_id CSV. 해당 산모는 train에만 포함")
     parser.add_argument("--check", action="store_true", help="환경·모델·데이터 디렉토리 검증만")
     args = parser.parse_args()
     cfg = json.loads(args.config.read_text(encoding="utf-8-sig"))
@@ -56,6 +57,17 @@ def config_args():
         parser.error("결과 폴더는 원천 데이터 밖에 두세요.")
     if cfg["threads"] < 1:
         parser.error("threads must be positive")
+    if not isinstance(cfg.get("export_min_mothers", 10), int) or cfg.get("export_min_mothers", 10) < 2:
+        parser.error("export_min_mothers must be an integer >=2 (screening rule, not approval)")
+    prior = str(args.prior_cohort) if args.prior_cohort is not None else cfg.get("prior_cohort_file", "")
+    cfg["prior_cohort_file"] = str(Path(prior).expanduser().resolve()) if prior else ""
+    if prior:
+        from fg.common import sha256
+        if not Path(cfg["prior_cohort_file"]).is_file():
+            parser.error("Prior cohort CSV does not exist")
+        cfg["prior_cohort_sha256"] = sha256(cfg["prior_cohort_file"])
+    from fg.protocol import DESIGN_VERSION
+    cfg["design_version"] = DESIGN_VERSION
     cfg["budget"] = cfg["profiles"][cfg["profile"]]
     return args, cfg
 
@@ -161,23 +173,30 @@ def main():
     catalog, fingerprints, duplicates = discover(Path(cfg["data_root"]))
     identity = dict(config=cfg, package_sha256=bundle_hash, input_files=fingerprints, environment=environment)
     key = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
-    run = output / f"{cfg['profile']}-{key}"
+    run_root = output / f"{cfg['profile']}-{key}"
+    run_root.mkdir(exist_ok=True)
+    run_lock = acquire_lock(run_root)
+    run = run_root / "internal"
     run.mkdir(exist_ok=True)
-    run_lock = acquire_lock(run)
     write_json(run / "run_manifest.json", dict(**identity, run_id=key, duplicate_files=duplicates))
-    write_json(output / "LATEST.json", {"run": str(run), "report": str(run / "report/report.html")})
-    note(f"출력: {run}")
+    from fg.protocol import write_protocol
+    write_protocol(run, cfg)
+    note(f"내부 결과: {run}")
     if args.check:
         note("CHECK OK — 학습은 실행하지 않았습니다.")
         run_lock.close()
         return
+    write_json(output / "LATEST.json", {"run": str(run_root), "internal": str(run),
+        "report": str(run / "report/report.html"), "export_review": str(run_root / "export_review"),
+        "export_report": str(run_root / "export_review/report.html"), "export_status": "pending_institution_review"})
     from fg.evaluation import create_splits
     from fg.models import run_a
     from fg.cnn import run_b
     from fg.supplementary import run_supplementary
     from fg.official import run_official
     from fg.report import run_report
-    status = run / "status.json"
+    from fg.export_review import run_export_review
+    status = run_root / "status.json"
     write_json(status, {"status": "running", "profile": cfg["profile"], "started": datetime.now(timezone.utc).isoformat()})
     try:
         run_stage(run, "data", lambda out: prepare(catalog, out, cfg))
@@ -187,12 +206,20 @@ def main():
         run_stage(run, "supplementary", lambda out: run_supplementary(run, out, cfg))
         run_stage(run, "official", lambda out: run_official(PACKAGE, run, out, cfg, catalog))
         run_stage(run, "report", lambda out: run_report(run, out, cfg))
+        run_stage(run_root, "export_review", lambda out: run_export_review(run, out, cfg))
     except BaseException as exc:
-        write_json(status, {"status": "failed", "error": str(exc), "type": type(exc).__name__, "traceback": traceback.format_exc()})
+        write_json(run / "failure.json", {"status": "failed", "error": str(exc),
+                   "type": type(exc).__name__, "traceback": traceback.format_exc()})
+        write_json(status, {"status": "failed", "type": type(exc).__name__,
+                            "details": "internal/failure.json"})
+        run_lock.close()
         raise
-    write_json(status, {"status": "complete", "profile": cfg["profile"], "report": str(run / "report/report.html"),
+    write_json(status, {"status": "complete", "profile": cfg["profile"], "design_version": cfg["design_version"],
+                        "report": str(run / "report/report.html"), "export_review": str(run_root / "export_review"),
+                        "export_status": "pending_institution_review",
                         "finished": datetime.now(timezone.utc).isoformat()})
-    note(f"SUCCESS — {run / 'report/report.html'}")
+    note(f"SUCCESS — 현장 보고서: {run / 'report/report.html'}")
+    note(f"반출 심사용 집계 결과 (승인 전): {run_root / 'export_review/report.html'}")
     run_lock.close()
 
 

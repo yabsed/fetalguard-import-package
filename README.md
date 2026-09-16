@@ -1,10 +1,14 @@
-# 본선 반입 패키지
+# 본선 반입 패키지 · 분석 설계 2.0
 
-데이터 경로와 결과 저장 경로만 지정하면 제안서의 실험 A·B, 부가 분석, 공식 모델 재현, 표·그림·HTML 보고서를 실행한다. 원천 데이터, 기존 실험 결과, 자체 사전학습 모델, 가상환경, 도커 이미지는 포함하지 않는다. 런타임은 이 폴더만으로 독립하며 인터넷·다른 실험 폴더·학습된 자체 모델을 요구하지 않는다.
+데이터 경로와 결과 저장 경로만 지정하면 실험 A·B, 부가 분석, 공식 모델 재현, 내부 검토 보고서와 **반출 심사용 집계 묶음**을 생성한다. 원천 데이터, 기존 실험 결과, 자체 사전학습 모델, 가상환경, 도커 이미지는 포함하지 않는다. 런타임은 이 폴더만으로 독립하며 인터넷·다른 실험 폴더·학습된 자체 모델을 요구하지 않는다.
+
+로컬 파일럿 결과를 반영해 단일 인자 비선형 대조군, Cat18, 평활 민감도, 동일 조건 CNN/EMR 비교를 추가했다. 질문과 비교·해석 범위는 [EXPERIMENT_DESIGN.md](EXPERIMENT_DESIGN.md), 현장/반출 산출물은 [OUTPUTS.md](OUTPUTS.md), 실행 검증은 [MOCK_TEST.md](MOCK_TEST.md)를 읽는다. 파일럿을 새 가설의 독립 확증 결과로 취급하지 않는다.
 
 ## 현장에서 실행
 
 **JupyterLab:** 신청한 PyTorch / Python 3.10 이상 커널로 `START.ipynb`를 열고 **Run All** → 데이터 폴더·결과 폴더 입력 → **전체 실행 / 이어서 실행**. 코드 수정은 필요 없다. 먼저 **사전검사** 버튼으로 환경과 공식 모델 로딩을 확인할 수 있다.
+
+이미 분석한 산모 목록이 있으면 선택 입력창 `기존 산모 CSV` 또는 `--prior-cohort /내부/기존산모.csv`를 사용한다. `mother_id` 열이 필요하며 같은 산모 ID 체계여야 한다. 해당 산모는 주 holdout의 train에만 포함하고 validation/test에서는 제외한다. CV·H5·LOSO는 기존 산모를 포함하는 탐색 분석이다. 미제공은 `not_checked`로 기록한다. 목록은 반입 폴더에 동봉하지 않는다. `tools/prepare_prior_cohort.py 기존실행 --output /내부/기존산모.csv`로 과거 실행에서 내부용 목록을 만들 수 있다.
 
 **터미널:** 아래 한 명령으로 실행한다. 경로 인자를 생략하면 터미널에서 경로를 물어본다.
 
@@ -38,16 +42,17 @@ Python 패키지는 기존 사전 신청 목록을 사용한다. `requirements-a
 | 2.3 분포·결측 | `fg/data.py` | 기관·산모·다태아·세그먼트 수, EMR 결측표, 제외 사유 |
 | 2.4 검증 질문 1 | `fg/data.py` | `bbox_audit.csv`: 실제 PNG 크기/경계/높이/이상 위치 전수 검증 |
 | 4.1·5.1 인자 28개 | `fg/features.py`, `feature_rules.py` | `segments.csv`, 신호 캐시 |
-| H1 실험 A | `fg/models.py` | CatBoost-28·XGBoost-28, 산모 단위 반복 CV와 홀드아웃 |
-| H2 단일 인자와 조합 | `fg/models.py` | 로지스틱 28개, 검증 AUROC로 선택한 최선 단일 인자와 짝지은 비교 |
-| H3 기여 구조 | `fg/models.py` | 6그룹 제거 실험, 규칙 비의존 인자만의 모델, 중요도·SHAP·개별 설명 |
-| H4 실험 B | `fg/cnn.py` | 작은/중형 CTG-net, 용량·정규화 비교, 동일 평가셋의 차이 CI |
+| H1 실험 A | `fg/models.py` | Cat28·XGB28·Cat18·전체 인자 로지스틱, 산모 단위 반복 CV와 홀드아웃 |
+| H2 단일 인자와 조합 | `fg/models.py` | 선형 28개 + spline 비선형 28개, 검증 AUROC로 선택 후 조합과 비교 |
+| H3 기여 구조 | `fg/models.py` | 6그룹 제거·robust, 평활 유무, seed별 차이, 훈련 인자-판독 관계·SHAP |
+| H4 실험 B | `fg/cnn.py` | seed 평균 검증 AP로 용량 선택, 같은 width/seed 정규화 절제, CI·추론 비용 |
 | 5.3.1 H5 | `fg/supplementary.py` | pH·Apgar 대응, 임상 변수에 판독 요약을 추가한 OOF 증분 |
 | 5.3.2 주석 대조 | `fg/supplementary.py` | 기록 단위 기저선·변이도·감속/가속과 추출 인자 대조 |
 | 5.3.3 기관 이질성 | `fg/supplementary.py` | 기관별 성능, 전 기관 LOSO, source 검증셋만으로 Platt 보정 |
-| 5.3.4 EMR 추가 | `fg/supplementary.py` | 파형+산전 EMR, 연령·재태주수·신호 결측 하위군 |
+| 5.3.4 EMR 추가 | `fg/supplementary.py` | 동일 seed 후보·예산·선택 규칙의 파형 vs 파형+EMR, 하위군 |
 | 공식 모델 재현 | `fg/official.py` | XGBoost Emergency 별도 평가, YOLO 공통 이미지 부분집합 비교 |
-| 결과 시각화 | `fg/report.py` | 비교표, ROC/PR/캘리브레이션, 중요도, 기관분포, LOSO 그림 PNG/PDF |
+| 측정 타당도 | `fg/data.py` | 특성별 0 비율·상수·측정 불가, 무평활 민감도, 연속 구간 경계 |
+| 결과·반출 심사 | `fg/report.py`, `fg/export_review.py` | 현장 보고서와 식별자·가중치 없는 고정 구조 집계 묶음 |
 
 보고서 5.3은 저장소의 `experiment-14/2-proposal-draft/draft_3_to_6.md`에 남은 분석 계획까지 포함했다. 최신 인자 정의는 `experiment-15`의 A.2 정렬 구현을 기준으로 옮겼다. 출처 파일과 원본 SHA256은 `SOURCE_MANIFEST.json`에 있다.
 
@@ -55,7 +60,7 @@ Python 패키지는 기존 사전 신청 목록을 사용한다. `requirements-a
 
 - 산모 그룹을 보존한 약 80/10/10 train/val/test 분할. 원 배포 폴더와 무관하게 새 분할을 만들며 동일 산모의 쌍둥이·반복 기록을 묶는다. 분할표는 결과에 저장한다.
 - 실험 A의 반복 CV는 최종 test를 제외한 개발 코호트에서 수행한다. 각 fold 안에 그룹 검증셋을 두어 조기중단·운영 임계값을 결정한다. OOF 파일은 시드별 wide 형식으로 저장해 대규모 자료에서 중복 행의 메모리 사용을 줄인다.
-- 최종 CatBoost/XGBoost 모델 시드와 CNN 용량·시드는 **validation AUPRC**, H2 단일 인자는 **validation AUROC**로 선택한다. 테스트 성능으로 모델을 선택하지 않는다.
+- CatBoost/XGBoost는 **validation AP**로 seed를 선택한다. CNN은 seed별 validation AP 평균으로 width를 선택하고 해당 width의 최고 validation AP seed를 선택한다. H2는 주 지표·선택 기준을 **AUROC**로 맞춘다. H1/H4 주 지표는 AP이며, 테스트 성능으로 모델을 선택하지 않는다.
 - 특이도 90%의 운영 임계값은 validation의 음성 점수에서 정한다. 동점 때문에 정확히 90%를 만들 수 없으면 보수적으로 잡는다. `sensitivity_at_test_spec90`은 별도의 test ROC 기술통계이며 운영 임계값 성능과 구분한다.
 - AUROC/AUPRC, 민감도·특이도·PPV·F1, Brier, 완전 정상 기록 경보율, 정상 기록의 관측 시간당 양성 5분 창 수를 산출한다. CI와 모델 차이는 산모 클러스터 부트스트랩으로 계산한다. 연속 양성 창을 하나의 경보 이벤트로 합치지는 않는다.
 - CNN 입력은 보고서대로 **2×150 원시신호**이며 종전 실험 8의 통계량 7개 추가 입력은 붙이지 않는다. 주 정규화는 training에서 구한 채널별 최대절댓값 나눗셈으로 심박수 수준을 보존한다. 세그먼트별 z-정규화는 별도 절제 대조군이다.
@@ -77,7 +82,7 @@ Python 패키지는 기존 사전 신청 목록을 사용한다. `requirements-a
 | 부트스트랩 | 2,000회 | 50회 |
 | 부가 분석·공식 모델·그림 | 모두 | 모두 |
 
-mock은 연결과 실행 가능성 검사다. 성능·CI를 연구 결론으로 사용하지 않는다. H5/LOSO는 full에서도 고정 시드 하나를 사용하며 H5는 해당 모드의 CV fold 수를 따른다. full은 GPU에서의 긴 실행을 전제로 하고 CPU에서는 훨씬 오래 걸릴 수 있다. `hit_cap`은 충분한 수렴을 확인하지 못한 실행을 표시한다.
+mock은 연결과 실행 가능성 검사다. 성능·CI를 연구 결론으로 사용하지 않는다. H5/LOSO는 full에서도 고정 시드 하나를 사용하며 H5는 해당 모드의 CV fold 수를 따른다. EMR 유무는 해당 모드의 모든 seed 후보를 동일하게 사용한다. full은 GPU에서의 긴 실행을 전제로 하고 CPU에서는 훨씬 오래 걸릴 수 있다. `hit_cap`은 충분한 수렴을 확인하지 못한 실행을 표시한다.
 
 현재 저장소에서는 다음 한 명령으로 로컬 데이터 전체 mock을 실행한다.
 
@@ -96,21 +101,22 @@ bash 본선/02-반입할-파일/MOCK.sh
 
 ## 결과·중단·재개
 
-결과는 지정한 폴더 아래 `full-<실행해시>` 또는 `mock-<실행해시>`에 저장된다. 첫 화면은 `report/report.html`. 상위 `LATEST.json`에 최근 결과 경로가 기록된다.
+결과는 지정한 폴더 아래 `full-<실행해시>` 또는 `mock-<실행해시>`에 저장된다. 현장 화면은 **`internal/report/report.html`**, 반출 신청용 화면은 **`export_review/report.html`**이다. 상위 `LATEST.json`에 두 경로가 기록된다.
 
-`data/`, `splits/`, `experiment_a/`, `experiment_b/`, `supplementary/`, `official/`, `report/`가 순서대로 만들어진다. 환경, 설정, 입력 파일 해시, 패키지 해시가 실행 ID에 들어가므로 서로 다른 데이터·버전·예산의 결과가 섞이지 않는다.
+`internal/` 아래 `data/`, `splits/`, `experiment_a/`, `experiment_b/`, `supplementary/`, `official/`, `report/`가 순서대로 만들어진다. 원본 경로·입력별 해시·모델·개인별 예측도 이 안에만 보관한다. 실행 전에 `protocol.json`으로 규약을 기록한다. 환경, 설정, 입력 파일 해시, 패키지 해시, 기존 산모 목록 해시가 실행 ID에 들어가므로 서로 다른 데이터·버전·예산의 결과가 섞이지 않는다.
 
 같은 명령을 재실행하면 완료 단계는 산출물 해시를 검증한 뒤 건너뛴다. 중간 학습 단계에서는 이미 저장한 트리, CNN epoch 체크포인트, 이미지별 YOLO 추론 결과를 재사용한다. 완료 산출물이 훼손되면 덮어쓰지 않고 오류로 알린다. 같은 출력에 동시 실행하는 것은 OS 파일 잠금으로 막는다. 오류는 비정상 exit code와 `status.json`에 남는다.
 
 `config.json`만 현장 설정 파일로 수정할 수 있다. 다른 승인 파일이 바뀌면 무결성 검사가 실패한다. 일부 분석을 의도적으로 비활성화할 경우 `cnn` / `official_models`를 false로 설정할 수 있지만 결과에 미수행을 명시한다. 누락 아웃컴·단일 클래스 기관 등은 상태 파일에 이유가 남는다. 수치 신호·산모 ID·주 라벨의 오류는 전체 분석을 중단한다.
 
-원천 데이터와 개인 단위 파생 CSV·신호 캐시·모델은 안심존 내부 결과다. `report/`를 포함해 반출할 결과는 기관 절차에 따라 심의를 받아야 하며, 자동 승인/자동 전송 기능은 없다.
+마지막에 `export_review/`를 생성한다. 원본 보고서를 복사하지 않고 허용한 집계 필드로 CSV·HTML·그림·설정 요약을 다시 만든다. 식별자, 원본 경로·파일별 해시, 개인별 예측, 가중치는 포함하지 않는다. 작은 집단은 기본 `export_min_mothers=10`으로 선별·억제하며 기관 규정을 대신하지 않는다. `EXPORT_MANIFEST.json`에 목록·해시·`pending_institution_review`를 표시한다. **심사 후보이지 반출 승인 완료가 아니다.** 내부 결과 폴더 전체를 반출하지 않는다.
 
 ## 개발·검증·반입 ZIP
 
 ```bash
 python -B -m unittest discover -s tests -v
-python -B tools/seal_package.py --zip ../02-반입할-파일.zip
+python -B tools/validate_run.py /결과/mock-실행해시 --expect-records 2301 --check-original-xgb
+python -B tools/seal_package.py --zip ../02-반입할-파일-v2.zip
 ```
 
 `PACKAGE_MANIFEST.json`은 설정 파일을 제외한 승인 파일의 SHA256이다. 반입용 ZIP 생성기는 심볼릭 링크와 데이터/파생 테이블을 거부한다. 원본 자산 갱신용 `tools/prepare_assets.py`, 원래 환경에서 공식 가중치 변환을 재현하는 `tools/export_official.py`는 유지보수용이다. 현장에서 실행할 필요는 없다.

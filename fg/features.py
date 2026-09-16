@@ -16,6 +16,9 @@ CAT28 = [
     "n_variable_decel", "n_severe_decel", "n_prolonged_decel",
     "hist_width", "hist_median", "hist_mode",
 ]
+# Original 18-feature baseline, evaluated with exactly the same preprocessing
+# and grouped splits as the 28-feature extension (not a historical score).
+CAT18 = CAT28[:18]
 GROUPS = {
     "signal": ["fhr_mean", "fhr_min", "fhr_max", "fhr_sd"],
     "baseline": ["figo_baseline", "hist_median", "hist_mode", "hist_width"],

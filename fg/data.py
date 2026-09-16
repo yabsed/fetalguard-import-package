@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 import re
+import time
 
 import numpy as np
 import pandas as pd
@@ -114,6 +115,46 @@ def official_row(rid, emr, label, annotation, case, mode):
     return dict(record_id=rid, target=numeric(label.get("Emergency")), **row)
 
 
+def longest_source_run(flags, names):
+    """Do not bridge recording prefixes, skipped indices, or unknown ordering.
+
+    Consecutive source image indices are only a proxy for continuity, not timestamps.
+    Unknown naming makes this covariate missing rather than fabricating a long run.
+    """
+    if len(flags) != len(names):
+        raise ValueError("Run summary needs one source name per label")
+    previous, current, longest = None, 0, 0
+    for flag, name in zip(flags, names):
+        match = re.fullmatch(r"(.+)_p(\d+)(?:\.png)?", str(name), re.IGNORECASE)
+        if match is None:
+            return np.nan, "unknown_source_order"
+        item = (match.group(1), int(match.group(2)))
+        contiguous = previous is not None and item[0] == previous[0] and item[1] == previous[1] + 1
+        current = (current + 1 if contiguous else 1) if flag else 0
+        longest = max(longest, current)
+        previous = item
+    return longest, "source_index_proxy"
+
+
+def feature_quality(frame):
+    """Descriptive measurement audit; no feature selection or threshold tuning."""
+    rows = []
+    for feature in CAT28:
+        x = frame[feature]
+        note_code = ("sample_difference_not_clinical_stv" if feature == "stv" else
+                     "duration_exceeds_window" if feature == "n_severe_decel" else "operational_definition")
+        rows.append(dict(feature=feature, n=len(frame), mothers=frame.mother_id.nunique(),
+            positive_mothers=frame.loc[frame.target == 1, "mother_id"].nunique(),
+            negative_mothers=frame.loc[frame.target == 0, "mother_id"].nunique(),
+            n_unique=x.nunique(), zero_fraction=float(x.eq(0).mean()),
+            zero_mothers=frame.loc[x.eq(0), "mother_id"].nunique(),
+            nonzero_mothers=frame.loc[x.ne(0), "mother_id"].nunique(),
+            min=float(x.min()), max=float(x.max()), mean=float(x.mean()), std=float(x.std()),
+            status="structurally_unobservable" if feature == "n_severe_decel" else "constant" if x.nunique() <= 1 else "ok",
+            definition_note=note_code))
+    return pd.DataFrame(rows)
+
+
 def prepare(catalog, out, cfg):
     out.mkdir(parents=True, exist_ok=True)
     bbox = [bbox_check(rid, read_json(entry["path"]), catalog["images"].get(rid, {}).get("path"))
@@ -123,6 +164,7 @@ def prepare(catalog, out, cfg):
     if failed and cfg["strict_bbox"]:
         raise ValueError(f"Bbox 검증 {len(failed)}건 불일치. bbox_audit.csv 확인. strict_bbox=false는 별도 분석을 명시적으로 허용할 때만 사용하세요.")
     records, segments, signals, exclusions, original, corrected, placeholders = [], [], [], [], [], [], Counter()
+    unsmoothed, extraction_seconds = [], {"smooth30": 0.0, "smooth0": 0.0}
     emr_fields = Counter()
     emr_missing = Counter()
     annotations = catalog["annotation_person"]
@@ -141,9 +183,10 @@ def prepare(catalog, out, cfg):
         mid = str(emr.get("Mother.de-identification_ID", "")).strip()
         if not mid or mid in {"9999", "nan", "None"}:
             raise ValueError(f"Missing mother ID for {rid}; refusing unsafe record-based split")
+        longest, continuity = longest_source_run(flags, case.selected_segments)
         rec = dict(record_id=rid, mother_id=mid, site=case.site, is_twin=case.is_twin, n_segments=len(flags),
                    abnormal_fraction=float(flags.mean()), any_abnormal=int(flags.any()),
-                   longest_abnormal_run=max((len(x) for x in ''.join(map(str, flags)).split('0')), default=0),
+                   longest_abnormal_run=longest, continuity_status=continuity,
                    image_path=catalog["images"].get(rid, {}).get("path", ""))
         rec.update({"emr_" + k: numeric(v) for k, v in emr.items() if k != "ID"})
         rec.update({"label_" + k: numeric(v) for k, v in label.items() if k not in {"ID", "Bbox", "Abnormality"}})
@@ -170,10 +213,19 @@ def prepare(catalog, out, cfg):
             if missing > cfg["max_missing_fraction"]:
                 exclusions.append(dict(record_id=rid, seg_idx=index, reason="fhr_missing_gt_threshold", missing_fraction=missing))
                 continue
+            started = time.perf_counter()
             clean_f, clean_t = preprocess_for_features(fhr, toco, 1 / case.dt)
             factors = extract_segment(clean_f, clean_t, 1 / case.dt)
+            extraction_seconds["smooth30"] += time.perf_counter() - started
+            started = time.perf_counter()
+            raw_f, raw_t = preprocess_for_features(fhr, toco, 1 / case.dt, smooth_seconds=0)
+            raw_factors = extract_segment(raw_f, raw_t, 1 / case.dt)
+            extraction_seconds["smooth0"] += time.perf_counter() - started
             if not np.isfinite(list(factors.values())).all():
                 raise ValueError(f"Nonfinite Cat28: {rid}/{index}")
+            if not np.isfinite(list(raw_factors.values())).all():
+                raise ValueError(f"Nonfinite unsmoothed Cat28: {rid}/{index}")
+            unsmoothed.append(dict(record_id=rid, seg_idx=index, **raw_factors))
             segments.append(dict(record_id=rid, mother_id=mid, site=case.site, seg_idx=index, target=int(target),
                                  missing_fraction=missing, record_all_normal=int(not flags.any()), **factors))
             signals.append(interpolate_signal(fhr, toco))
@@ -188,7 +240,14 @@ def prepare(catalog, out, cfg):
     if not signals:
         raise ValueError("No usable signal segments")
     pd.DataFrame(records).to_csv(out / "records.csv", index=False)
-    pd.DataFrame(segments).to_csv(out / "segments.csv", index=False)
+    segment_frame = pd.DataFrame(segments)
+    raw_frame = pd.DataFrame(unsmoothed)
+    segment_frame.to_csv(out / "segments.csv", index=False)
+    raw_frame.to_csv(out / "segments_unsmoothed.csv", index=False)
+    feature_quality(segment_frame).to_csv(out / "feature_quality.csv", index=False)
+    pd.DataFrame([dict(feature=f, mean_abs_change=float(np.abs(segment_frame[f] - raw_frame[f]).mean()),
+        zero_fraction_smooth30=float(segment_frame[f].eq(0).mean()), zero_fraction_smooth0=float(raw_frame[f].eq(0).mean()))
+        for f in CAT28]).to_csv(out / "preprocessing_sensitivity.csv", index=False)
     np.save(out / "signals.npy", np.stack(signals))
     pd.DataFrame(exclusions, columns=["record_id", "seg_idx", "reason", "missing_fraction"]).to_csv(out / "exclusions.csv", index=False)
     pd.DataFrame(original, columns=["record_id", "target"] + OFFICIAL_COLUMNS).to_csv(out / "official_original.csv", index=False)
@@ -205,6 +264,9 @@ def prepare(catalog, out, cfg):
                    bbox_checked=sum(r["checked"] for r in bbox), bbox_failed=len(failed),
                    bbox_unverified=sum(not r["checked"] and r["n_abnormal"] > 0 for r in bbox),
                    channel_contract=["FHR", "TOCO"], sample_interval_seconds=2,
+                   feature_extraction_seconds=extraction_seconds,
+                   feature_extraction_ms_per_segment={k: v * 1000 / len(segments) for k, v in extraction_seconds.items()},
+                   continuity_unknown_records=sum(r["continuity_status"] != "source_index_proxy" for r in records),
                    features=CAT28)
     write_json(out / "summary.json", summary)
     note(f"데이터 준비 완료: {len(records):,} records / {len(segments):,} segments")
