@@ -467,7 +467,7 @@ def hypothesis_evidence(tables, profile=None):
     return pd.DataFrame(rows)
 
 
-def write_review_report(out, tables, profile):
+def write_review_report(out, tables, profile, image_files=()):
     """No arbitrary HTML/links/labels from the internal report are accepted."""
     title = "MOCK — 반출 심사용 집계 결과 (학술 결론 금지)" if profile == "mock" else "반출 심사용 집계 결과 — 기관 승인 전"
     notes = ["이 묶음은 반출 승인이 아닙니다. 수신 기관의 검토가 완료될 때까지 현장에 보관하세요.",
@@ -485,6 +485,14 @@ def write_review_report(out, tables, profile):
     for note in notes:
         markup.append("<p>" + html.escape(note) + "</p>")
         markdown.append(note)
+    if image_files:
+        intro = "이미지 전용 심사는 images/의 PNG만 선택합니다. CSV·HTML·JSON·PDF는 이 폴더 밖의 현장 검토 자료입니다. 그래프 이미지도 기관의 승인이 필요합니다."
+        markup.append("<h2>PNG 그래프 묶음</h2><p>" + intro + "</p>")
+        markdown += ["## PNG 그래프 묶음", intro]
+        for path in image_files:
+            relative = path.relative_to(out).as_posix()
+            markup.append("<details><summary>" + path.name + "</summary><img loading='lazy' src='" + relative + "' alt='" + path.stem + "'></details>")
+            markdown.append("![" + path.stem + "](" + relative + ")")
     figure_files = []
     comparison = tables.get("model_comparison", pd.DataFrame())
     if not comparison.empty and "auroc" in comparison and comparison.auroc.notna().any():
@@ -577,10 +585,14 @@ def _build_export_review(run, out, cfg):
     protocol = out / "protocol_summary.json"
     write_json(protocol, metadata)
     files.append(protocol)
-    files += write_review_report(out, tables, profile)
+    from .export_images import write_image_atlas
+    image_files = write_image_atlas(out / "images", tables, metadata)
+    files += image_files
+    files += write_review_report(out, tables, profile, image_files=image_files)
     hashes = [{"file": path.relative_to(out).as_posix(), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                "bytes": path.stat().st_size} for path in sorted(files)]
-    write_json(out / "EXPORT_MANIFEST.json", {"schema_version": 1, "review_status": "pending_institution_review",
+    write_json(out / "EXPORT_MANIFEST.json", {"schema_version": 2, "review_status": "pending_institution_review",
+               "image_submission_directory": "images", "image_submission_format": "RGB PNG only",
                "screening_is_approval": False, "source_material_included": False,
                "excluded_categories": ["identifiers", "individual_predictions", "raw_signals", "model_weights", "source_paths", "source_file_hashes"],
                "files": hashes})
@@ -625,11 +637,15 @@ def validate_review_bundle(out):
     allowed = {name + ".csv" for name in EXPORT_TABLES} | {
         "report.html", "report.md", "protocol_summary.json", "EXPORT_MANIFEST.json", "figures/model_comparison.png", "figures/model_comparison.pdf",
         "figures/feature_response_training.png", "figures/feature_response_training.pdf"}
+    from .export_images import IMAGE_NAME, validate_image_directory
+    allowed |= {name for name in actual if name.startswith("images/") and IMAGE_NAME.fullmatch(name.removeprefix("images/"))}
     if actual - allowed:
         raise ValueError("Unrecognized files in aggregate review bundle")
     manifest = read_json(root / "EXPORT_MANIFEST.json")
     if manifest.get("review_status") != "pending_institution_review" or manifest.get("screening_is_approval") is not False:
         raise ValueError("Review status missing or invalid")
+    if manifest.get("schema_version") == 2 or (root / "images").exists():
+        validate_image_directory(root / "images")
     listed = {entry["file"] for entry in manifest["files"]}
     if listed != actual - {"EXPORT_MANIFEST.json"} or len(listed) != len(manifest["files"]):
         raise ValueError("Review manifest inventory mismatch")
@@ -643,7 +659,9 @@ def validate_review_bundle(out):
             if tag in {"script", "iframe", "object", "embed", "form"}:
                 raise ValueError("Active content is not allowed in a review report")
             for key, value in attrs:
-                if key.startswith("on") or (key in ("href", "src") and value not in ("figures/model_comparison.png", "figures/feature_response_training.png")):
+                allowed_images = {name for name in actual if name.startswith("images/") and IMAGE_NAME.fullmatch(name.removeprefix("images/"))}
+                allowed_images |= {"figures/model_comparison.png", "figures/feature_response_training.png"}
+                if key.startswith("on") or (key in ("href", "src") and value not in allowed_images):
                     raise ValueError("Unexpected link in aggregate review report")
 
     Links().feed((root / "report.html").read_text(encoding="utf-8"))

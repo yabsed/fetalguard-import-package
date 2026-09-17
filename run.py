@@ -188,7 +188,8 @@ def main():
         return
     write_json(output / "LATEST.json", {"run": str(run_root), "internal": str(run),
         "report": str(run / "report/report.html"), "export_review": str(run_root / "export_review"),
-        "export_report": str(run_root / "export_review/report.html"), "export_status": "pending_institution_review"})
+        "export_report": str(run_root / "export_review/report.html"),
+        "export_images": str(run_root / "export_review/images"), "export_status": "pending_institution_review"})
     from fg.evaluation import create_splits
     from fg.models import run_a
     from fg.cnn import run_b
@@ -220,6 +221,7 @@ def main():
                         "finished": datetime.now(timezone.utc).isoformat()})
     note(f"SUCCESS — 현장 보고서: {run / 'report/report.html'}")
     note(f"반출 심사용 집계 결과 (승인 전): {run_root / 'export_review/report.html'}")
+    note(f"이미지 전용 심사 폴더 (PNG만): {run_root / 'export_review/images'}")
     run_lock.close()
 
 
