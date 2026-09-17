@@ -28,7 +28,17 @@ FETALGUARD_PYTHON=/사용할/python bash 본선/02-반입할-파일/MOCK.sh --de
 python -B 본선/02-반입할-파일/tools/validate_run.py /결과/mock-실행해시 --expect-records 2301 --check-original-xgb
 ```
 
-현장에서는 `internal/report/report.html`과 사례 검토 화면을 확인하고, 심사 신청에는 `export_review/report.html`을 사용한다. 자동 선별 통과와 기관 반출 승인은 다르다. mock은 실행·계약 검사이며 낮은 학습 예산의 점수나 CI를 연구 결론에 사용하지 않는다.
+현장에서는 `internal/report/report.html`과 사례 검토 화면을 확인한다. 심사 준비는 `export_review/report.html`에서 하고, 이미지 전용 심사에는 `export_review/images/`의 PNG만 선택한다. 자동 선별 통과와 기관 반출 승인은 다르다. mock은 실행·계약 검사이며 낮은 학습 예산의 점수나 CI를 연구 결론에 사용하지 않는다.
+
+## 이미지 반출 묶음 검증
+
+```bash
+python -B -m unittest discover -s tests -p 'test_export*.py' -v
+```
+
+`test_export_images.py`는 실제 산모 자료 없이 합성 집계만 사용한다. 28개 고정 집계 영역의 그래프 생성, 모든 인자 반응 곡선, 후보 목록 페이지 분할, CI 끝점과 0/억제/미산출 구별, 내부 전용 자료 거부, CSV·PNG 메타데이터·추가 페이로드 거부, 기존 실행 재사용 시 선별 기준 유지/상향을 검사한다. `test_export_review.py`는 기존 소수 집단·분모 선별과 원자적 생성·해시·외부 링크 차단을 함께 검사한다.
+
+PNG만 생성하는 부분은 모델 재학습이나 신규 패키지 설치를 요구하지 않는다. 기존 실행을 이용할 때는 `tools/build_image_review.py`를 사용한다. 실제 기관 데이터의 수치와 전체 학습 재실행은 합성 테스트로 대체되지 않는다.
 
 아래는 개편 전 1.0의 검증 이력이다. 이전 full 결과는 그대로 보존했으며, 버전 2.0 full 결과로 이름을 바꾸거나 재사용하지 않았다.
 

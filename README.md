@@ -2,6 +2,10 @@
 
 데이터 경로와 결과 저장 경로만 지정하면 실험 A·B, 부가 분석, 공식 모델 재현, 내부 검토 보고서와 **반출 심사용 집계 묶음**을 생성한다. 원천 데이터, 기존 실험 결과, 자체 사전학습 모델, 가상환경, 도커 이미지는 포함하지 않는다. 런타임은 이 폴더만으로 독립하며 인터넷·다른 실험 폴더·학습된 자체 모델을 요구하지 않는다.
 
+**그래프 이미지만 반출 심사에 제출할 경우:** 실행 후 **`export_review/images/`의 PNG만** 선택한다. 주 성능·차이·CI부터 인자 설명, CNN·EMR·LOSO·아웃컴까지 28개 집계 영역을 페이지별 고해상도 그래프로 만든다. CSV·HTML·JSON·PDF는 이 이미지 폴더에 들어가지 않는다. 이미지도 승인 전 심사 후보이며, 개별 파형·개인별 예측은 포함하지 않는다. 상세 구성은 [OUTPUTS.md](OUTPUTS.md)에 있다.
+
+기존 분석을 재학습하지 않고 그래프를 추가하려면 `python -B tools/build_image_review.py /결과/full-실행해시`를 실행한다. 별도로 생성된 **`image_review/images/`**가 이미지 전용 심사 폴더다.
+
 로컬 파일럿 결과를 반영해 단일 인자 비선형 대조군, Cat18, 평활 민감도, 동일 조건 CNN/EMR 비교를 추가했다. 질문과 비교·해석 범위는 [EXPERIMENT_DESIGN.md](EXPERIMENT_DESIGN.md), 현장/반출 산출물은 [OUTPUTS.md](OUTPUTS.md), 실행 검증은 [MOCK_TEST.md](MOCK_TEST.md)를 읽는다. 파일럿을 새 가설의 독립 확증 결과로 취급하지 않는다.
 
 ## 현장에서 실행
@@ -101,7 +105,7 @@ bash 본선/02-반입할-파일/MOCK.sh
 
 ## 결과·중단·재개
 
-결과는 지정한 폴더 아래 `full-<실행해시>` 또는 `mock-<실행해시>`에 저장된다. 현장 화면은 **`internal/report/report.html`**, 반출 신청용 화면은 **`export_review/report.html`**이다. 상위 `LATEST.json`에 두 경로가 기록된다.
+결과는 지정한 폴더 아래 `full-<실행해시>` 또는 `mock-<실행해시>`에 저장된다. 현장 화면은 **`internal/report/report.html`**, 심사 준비용 화면은 **`export_review/report.html`**, 이미지 제출 후보는 **`export_review/images/`**다. 상위 `LATEST.json`에 경로가 기록된다.
 
 `internal/` 아래 `data/`, `splits/`, `experiment_a/`, `experiment_b/`, `supplementary/`, `official/`, `report/`가 순서대로 만들어진다. 원본 경로·입력별 해시·모델·개인별 예측도 이 안에만 보관한다. 실행 전에 `protocol.json`으로 규약을 기록한다. 환경, 설정, 입력 파일 해시, 패키지 해시, 기존 산모 목록 해시가 실행 ID에 들어가므로 서로 다른 데이터·버전·예산의 결과가 섞이지 않는다.
 
@@ -109,7 +113,7 @@ bash 본선/02-반입할-파일/MOCK.sh
 
 `config.json`만 현장 설정 파일로 수정할 수 있다. 다른 승인 파일이 바뀌면 무결성 검사가 실패한다. 일부 분석을 의도적으로 비활성화할 경우 `cnn` / `official_models`를 false로 설정할 수 있지만 결과에 미수행을 명시한다. 누락 아웃컴·단일 클래스 기관 등은 상태 파일에 이유가 남는다. 수치 신호·산모 ID·주 라벨의 오류는 전체 분석을 중단한다.
 
-마지막에 `export_review/`를 생성한다. 원본 보고서를 복사하지 않고 허용한 집계 필드로 CSV·HTML·그림·설정 요약을 다시 만든다. 식별자, 원본 경로·파일별 해시, 개인별 예측, 가중치는 포함하지 않는다. 작은 집단은 기본 `export_min_mothers=10`으로 선별·억제하며 기관 규정을 대신하지 않는다. `EXPORT_MANIFEST.json`에 목록·해시·`pending_institution_review`를 표시한다. **심사 후보이지 반출 승인 완료가 아니다.** 내부 결과 폴더 전체를 반출하지 않는다.
+마지막에 `export_review/`를 생성한다. 원본 보고서를 복사하지 않고 허용한 집계 필드로 CSV·HTML·그림·설정 요약을 다시 만든다. **이미지 전용 심사에는 `images/`의 PNG만 선택**하며, CSV·HTML·JSON·PDF는 현장 검토용으로 남긴다. 식별자, 원본 경로·파일별 해시, 개인별 예측, 가중치는 포함하지 않는다. 작은 집단은 기본 `export_min_mothers=10`으로 선별·억제하며 기관 규정을 대신하지 않는다. `EXPORT_MANIFEST.json`에 목록·해시·`pending_institution_review`를 표시한다. **심사 후보이지 반출 승인 완료가 아니다.** 내부 결과 폴더 전체를 반출하지 않는다.
 
 ## 개발·검증·반입 ZIP
 
