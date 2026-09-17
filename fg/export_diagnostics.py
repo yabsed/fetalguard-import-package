@@ -5,7 +5,6 @@ rewriting their experiment files or their original screened export manifest.
 Only fixed labels, aggregate numbers and generated prose cross this boundary.
 """
 from collections import Counter
-import csv
 import hashlib
 import html
 import json

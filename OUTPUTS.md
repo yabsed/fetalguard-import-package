@@ -62,7 +62,7 @@
 2. 인자 측정 가능성, 분석 누락, 학습 상한 도달, H1–H5의 비교 CI, 사이트별 오경보, 아웃컴 결측을 확인한다.
 3. `internal/report/case_review.html`에서 Cat28의 TP/TN/FP/FN별 최대 2개 파형을 확인한다. 미리 정한 극단 점수 사례이며 대표 표본이 아니다. 개별 SHAP가 계산되지 않은 사례는 미산출로 표시한다. 개인별 설명·예측·모델은 내부에서 검토하고, ID를 지웠다는 이유만으로 이런 행을 반출 묶음에 추가하지 않는다.
 4. `tools/validate_run.py`로 단계별 해시와 심사 묶음의 무결성을 검증한다.
-5. `export_review/report.html`의 PNG 그래프 묶음과 현장용 집계표를 대조한다. 이미지 전용 심사에는 **`images/` 안의 PNG만** 선택한다. HTML·CSV·JSON·PDF가 들어 있는 상위 폴더 전체를 함께 제출하지 않는다. 승인된 이미지 파일만 시설 절차대로 반출한다.
+5. `export_review/report.html`과 `export_review/visit_audit/index.html`에서 집계표와 이미지를 대조한다. 이미지 심사에는 `images/`와 `visit_audit/images/`의 PNG, CSV 심사에는 `csv/`와 `visit_audit/csv/`의 파일을 선택한다.
 
 `export_review`는 승인 여부를 뜻하지 않는다. `EXPORT_MANIFEST.json`의 상태는 `pending_institution_review`다. 자동 외부 전송 기능은 없다. 기관이 모델·개별 사례 등 추가 산출물의 반출을 승인한다면 별도 범위로 처리하며, 기본 묶음에는 포함하지 않는다.
 
@@ -151,4 +151,4 @@ CV·seed별 보조표의 정상 기록 경보율·정상 관찰시간당 양성 
 - `hypothesis_evidence.csv`, `cohort_counts.csv`, `protocol_summary.json`: 질문별 근거와 분석 규모·설정 요약.
 - `EXPORT_MANIFEST.json`: 선별 집계 파일 목록·SHA256·검토 대기 상태. `onsite_figures/`는 목록에서 제외하고 자체 manifest로 검증하며 선별 통과로 취급하지 않는다.
 
-수행 불가 또는 선별 억제 항목은 빈 표/상태로 남을 수 있다. 현장에서 HTML을 볼 때는 검토 폴더 전체를 보존하고, 이미지 전용 제출에는 `images/`의 PNG만 선택한다. 표의 값은 이미지 생성의 현장 대조 자료이며 CSV 반출을 전제하지 않는다. 임의 파일·PNG 메타데이터를 추가하면 검증기가 실패한다.
+수행 불가 또는 선별 억제 항목은 빈 표/상태로 남을 수 있다. 이미지 후보와 CSV 후보는 모두 `export_review/` 아래에 모으고 허용된 형식을 심사에 제출한다. 임의 파일·PNG 메타데이터를 추가하면 검증기가 실패한다.

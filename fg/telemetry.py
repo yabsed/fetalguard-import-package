@@ -233,6 +233,11 @@ class Visit:
                 save_json(self.path / "export_diagnostics_failure.json", dict(type=type(exc).__name__, error=str(exc)))
                 print(f"반출용 진단 생성 실패: {type(exc).__name__}. 내부 일지에서 원인을 확인하세요.", file=sys.stderr)
                 if error is None:
+                    save_json(self.path / "status.json", dict(status="export_diagnostics_failed", finished=stamp()))
+                    if self.mode == "analysis" and self.run is not None and (self.run.parent / "status.json").is_file():
+                        save_json(self.run / "export_diagnostics_failure.json", dict(type=type(exc).__name__, error=str(exc)))
+                        save_json(self.run.parent / "status.json", dict(status="failed", type=type(exc).__name__,
+                            details="internal/export_diagnostics_failure.json"))
                     self.pointer("export_diagnostics_failed")
                     raise
             self.pointer(status)

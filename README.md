@@ -155,7 +155,7 @@ bash 본선/02-반입할-파일/MOCK.sh
 
 `config.json`만 현장 설정 파일로 수정할 수 있다. 다른 승인 파일이 바뀌면 무결성 검사가 실패한다. 일부 분석을 의도적으로 비활성화할 경우 `cnn` / `official_models`를 false로 설정할 수 있지만 결과에 미수행을 명시한다. 누락 아웃컴·단일 클래스 기관 등은 상태 파일에 이유가 남는다. 수치 신호·산모 ID·주 라벨의 오류는 전체 분석을 중단한다.
 
-`export_review/`의 집계 보고서는 원본 보고서를 복사하지 않고 허용한 집계 필드로 CSV·HTML·그림·설정 요약을 다시 만든다. **이미지 전용 심사에는 `images/`의 PNG만 선택**하며, CSV·HTML·JSON·PDF는 현장 검토용으로 남긴다. 선별 집계에는 식별자, 원본 경로·파일별 해시, 개인별 예측, 가중치를 포함하지 않는다. 작은 집단은 기본 `export_min_mothers=10`으로 선별·억제한다. `EXPORT_MANIFEST.json`의 schema 3은 선별 집계의 목록·해시만 관리한다. 같은 폴더의 `onsite_figures/`는 비선별 현장 전용 자료로 자체 manifest와 별도 완료 마커를 사용한다. **상위 폴더 전체가 반출 후보라는 뜻이 아니다.** 기존 결과는 이동하거나 다시 쓰지 않는다.
+`export_review/`의 집계 보고서는 허용한 집계 필드로 CSV·HTML·그림·설정 요약을 생성한다. 이미지 심사 후보는 `images/`와 `visit_audit/images/`, CSV 심사 후보는 `csv/`와 `visit_audit/csv/`다. 선별 집계에는 식별자, 원본 경로·파일별 해시, 개인별 예측, 가중치를 포함하지 않는다. 작은 집단은 기본 `export_min_mothers=10`으로 선별·억제한다. 루트 `EXPORT_MANIFEST.json`은 기존 성능 집계, `visit_audit/EXPORT_MANIFEST.json`은 추가 진단의 목록·해시를 관리하며 검증기가 둘 다 검사한다. `onsite_figures/`는 비선별 현장 전용 자료로 자체 manifest와 별도 완료 마커를 사용한다. 기존 결과는 보존한다.
 
 ## 개발·검증·반입 ZIP
 
