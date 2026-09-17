@@ -18,6 +18,14 @@ PACKAGE = Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def forbid_network(event, args):
     if event in {"socket.connect", "socket.getaddrinfo", "socket.bind"}:
         raise RuntimeError(f"Offline runtime blocked: {event}")
@@ -33,6 +41,7 @@ def config_args():
     parser.add_argument("--threads", type=int)
     parser.add_argument("--prior-cohort", type=Path, help="이미 분석한 산모 mother_id CSV. 해당 산모는 train에만 포함")
     parser.add_argument("--check", action="store_true", help="환경·모델·데이터 디렉토리 검증만")
+    parser.add_argument("--survey-only", action="store_true", help="학습·GPU 검사 없이 원천 구조/품질 조사만 (내부용)")
     args = parser.parse_args()
     cfg = json.loads(args.config.read_text(encoding="utf-8-sig"))
     for key in ("profile", "device", "threads"):
@@ -62,10 +71,9 @@ def config_args():
     prior = str(args.prior_cohort) if args.prior_cohort is not None else cfg.get("prior_cohort_file", "")
     cfg["prior_cohort_file"] = str(Path(prior).expanduser().resolve()) if prior else ""
     if prior:
-        from fg.common import sha256
         if not Path(cfg["prior_cohort_file"]).is_file():
             parser.error("Prior cohort CSV does not exist")
-        cfg["prior_cohort_sha256"] = sha256(cfg["prior_cohort_file"])
+        cfg["prior_cohort_sha256"] = file_sha256(cfg["prior_cohort_file"])
     from fg.protocol import DESIGN_VERSION
     cfg["design_version"] = DESIGN_VERSION
     cfg["budget"] = cfg["profiles"][cfg["profile"]]
@@ -76,13 +84,12 @@ def verify_package():
     manifest = PACKAGE / "PACKAGE_MANIFEST.json"
     if not manifest.is_file():
         raise ValueError("PACKAGE_MANIFEST.json 없음. 반입용 패키지 구성이 완료되지 않았습니다.")
-    from fg.common import sha256
     entries = json.loads(manifest.read_text(encoding="utf-8"))
     bad = [name for name, digest in entries["files"].items()
-           if not (PACKAGE / name).is_file() or sha256(PACKAGE / name) != digest]
+           if not (PACKAGE / name).is_file() or file_sha256(PACKAGE / name) != digest]
     if bad:
         raise ValueError(f"반입 파일 무결성 불일치: {bad}. config.json만 현장 설정용으로 수정할 수 있습니다.")
-    return sha256(manifest)
+    return file_sha256(manifest)
 
 
 def preflight(cfg):
@@ -116,23 +123,33 @@ def preflight(cfg):
 
 
 def run_stage(run, name, action, *, target=None):
+    from fg.telemetry import scope
+    with scope(name):
+        return _run_stage(run, name, action, target=target)
+
+
+def _run_stage(run, name, action, *, target=None):
     from fg.common import sha256, write_json, read_json, note
+    from fg.telemetry import emit
     target = Path(target) if target is not None else run / name
     marker = run / ".state" / (name + ".json")
     if marker.exists():
         completed = read_json(marker)
         if all((target / p).is_file() and sha256(target / p) == digest for p, digest in completed["files"].items()):
             note(f"재개: {name} 완료 검증됨")
+            emit("stage_reused", original_seconds=completed.get("seconds"))
             return
         raise ValueError(f"완료 단계 산출물이 변경/삭제됨: {target}. 원본을 복구하거나 다른 --output 경로로 재실행하세요.")
     note(f"시작: {name}")
     started = time.monotonic()
     target.mkdir(parents=True, exist_ok=True)
     action(target)
+    hash_started = time.monotonic()
     files = {str(p.relative_to(target)): sha256(p) for p in sorted(target.rglob("*")) if p.is_file()}
     if not files:
         raise RuntimeError(f"Stage produced no artifacts: {name}")
     write_json(marker, {"seconds": time.monotonic() - started, "files": files})
+    emit("stage_artifacts_hashed", seconds=time.monotonic() - hash_started, files=len(files))
     note(f"완료: {name} ({time.monotonic() - started:.1f}s)")
 
 
@@ -162,33 +179,57 @@ def main():
     os.environ.update(OMP_NUM_THREADS=str(cfg["threads"]), MKL_NUM_THREADS=str(cfg["threads"]),
                       OPENBLAS_NUM_THREADS=str(cfg["threads"]), MPLCONFIGDIR=str(output / ".matplotlib"),
                       CUBLAS_WORKSPACE_CONFIG=":4096:8")
-    from fg.common import note, write_json
-    bundle_hash = verify_package()
+    from fg.telemetry import Visit
+    mode = "survey_only" if getattr(args, "survey_only", False) else "check_only" if args.check else "analysis"
+    with Visit(output, cfg, mode=mode) as visit:
+        return execute(args, cfg, visit)
+
+
+def execute(args, cfg, visit):
+    from fg.telemetry import save_json as write_json, scope, emit
+    from fg.survey import run_survey
+    def note(message):
+        print(f"[{datetime.now().isoformat(timespec='seconds')}] {message}", flush=True)
+    output = Path(cfg["output_root"])
+    with scope("package_verification"):
+        bundle_hash = verify_package()
+    emit("package_verified", package_sha256=bundle_hash)
+    note(f"학습 전 데이터 조사 · 실행 일지: {visit.path}")
+    with scope("source_survey"):
+        run_survey(Path(cfg["data_root"]), visit.path / "survey")
+    visit.refresh()
+    if getattr(args, "survey_only", False):
+        note(f"SURVEY OK — 학습 없음. 조사 보고서: {visit.path / 'index.html'}")
+        return
     note(f"환경·공식 모델 사전검사 ({cfg['profile']})")
-    environment = preflight(cfg)
+    with scope("preflight"):
+        environment = preflight(cfg)
     # Imports above may query the platform via subprocess; scientific runtime below is offline.
     sys.addaudithook(forbid_network)
     from fg.data import discover, prepare
     note("원천 데이터 목록·중복·해시 확인")
-    catalog, fingerprints, duplicates = discover(Path(cfg["data_root"]))
+    with scope("input_hash_and_discovery"):
+        catalog, fingerprints, duplicates = discover(Path(cfg["data_root"]))
     identity = dict(config=cfg, package_sha256=bundle_hash, input_files=fingerprints, environment=environment)
     key = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
     run_root = output / f"{cfg['profile']}-{key}"
     run_root.mkdir(exist_ok=True)
-    run_lock = acquire_lock(run_root)
+    visit.run_lock = acquire_lock(run_root)
     run = run_root / "internal"
     run.mkdir(exist_ok=True)
+    visit.attach(run)
     write_json(run / "run_manifest.json", dict(**identity, run_id=key, duplicate_files=duplicates))
     from fg.protocol import write_protocol
     write_protocol(run, cfg)
+    visit.refresh()
     note(f"내부 결과: {run}")
     if args.check:
         note("CHECK OK — 학습은 실행하지 않았습니다.")
-        run_lock.close()
         return
     write_json(output / "LATEST.json", {"run": str(run_root), "internal": str(run),
         "report": str(run / "report/report.html"), "export_review": str(run_root / "export_review"),
         "onsite_figures": str(run_root / "export_review/onsite_figures/index.html"),
+        "visit_audit": str(run / "visit_audit/index.html"),
         "export_report": str(run_root / "export_review/report.html"),
         "export_images": str(run_root / "export_review/images"), "export_status": "pending_institution_review"})
     from fg.evaluation import create_splits
@@ -209,6 +250,8 @@ def main():
         run_stage(run, "supplementary", lambda out: run_supplementary(run, out, cfg))
         run_stage(run, "official", lambda out: run_official(PACKAGE, run, out, cfg, catalog))
         run_stage(run, "report", lambda out: run_report(run, out, cfg))
+        # Mutable diagnostic views stay outside immutable experiment stage hashes.
+        visit.refresh()
         run_stage(run_root, "export_review", lambda out: run_export_review(run, out, cfg))
         run_stage(run_root, "onsite_figures", lambda out: build_onsite_figures(run, out, cfg),
                   target=run_root / "export_review/onsite_figures")
@@ -217,7 +260,6 @@ def main():
                    "type": type(exc).__name__, "traceback": traceback.format_exc()})
         write_json(status, {"status": "failed", "type": type(exc).__name__,
                             "details": "internal/failure.json"})
-        run_lock.close()
         raise
     write_json(status, {"status": "complete", "profile": cfg["profile"], "design_version": cfg["design_version"],
                         "report": str(run / "report/report.html"), "export_review": str(run_root / "export_review"),
@@ -226,9 +268,9 @@ def main():
                         "finished": datetime.now(timezone.utc).isoformat()})
     note(f"SUCCESS — 현장 보고서: {run / 'report/report.html'}")
     note(f"현장 이해용 그래프: {run_root / 'export_review/onsite_figures/index.html'}")
+    note(f"첫 방문 진단·다음 방문 준비표: {run / 'visit_audit/index.html'}")
     note(f"반출 심사용 집계 결과 (승인 전): {run_root / 'export_review/report.html'}")
     note(f"이미지 전용 심사 폴더 (PNG만): {run_root / 'export_review/images'}")
-    run_lock.close()
 
 
 if __name__ == "__main__":

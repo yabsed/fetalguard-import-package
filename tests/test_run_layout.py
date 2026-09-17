@@ -16,6 +16,7 @@ import run
 class RunLayoutTests(unittest.TestCase):
     def configured_runner(self, temporary, check):
         root = Path(temporary)
+        (root / "source").mkdir()
         cfg = json.loads((run.PACKAGE / "config.json").read_text())
         cfg.update(profile="mock", output_root=str(root), data_root=str(root / "source"),
                    resolved_device="cpu", threads=1)
@@ -31,6 +32,37 @@ class RunLayoutTests(unittest.TestCase):
         stack.enter_context(patch("fg.data.discover", return_value=({}, [], 0)))
         stack.enter_context(patch("fg.common.note"))
         return root, stack, lock
+
+    def test_failed_preflight_keeps_survey_and_journal_before_run_id(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, stack, lock = self.configured_runner(temporary, check=False)
+            with stack, patch.object(run, "preflight", side_effect=RuntimeError("missing dependency")):
+                with self.assertRaisesRegex(RuntimeError, "missing dependency"):
+                    run.main()
+            self.assertFalse((root / "LATEST.json").exists())
+            latest = json.loads((root / "LATEST_VISIT.json").read_text())
+            self.assertEqual(latest["status"], "failed")
+            journal = Path(latest["journal"])
+            self.assertTrue((journal / "survey/summary.json").is_file())
+            self.assertTrue(Path(latest["audit"]).is_file())
+            self.assertIn("missing dependency", (journal / "failure.json").read_text())
+            self.assertIn("stage_failed", (journal / "events.jsonl").read_text())
+            lock.close.assert_not_called()
+
+    def test_survey_only_never_checks_gpu_or_trains(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, stack, lock = self.configured_runner(temporary, check=False)
+            args = SimpleNamespace(check=False, survey_only=True)
+            with stack, patch.object(run, "config_args", return_value=(args, run.config_args()[1])), \
+                    patch.object(run, "preflight", side_effect=AssertionError("must not import ML")), \
+                    patch.object(run, "run_stage", side_effect=AssertionError("must not train")):
+                run.main()
+            latest = json.loads((root / "LATEST_VISIT.json").read_text())
+            self.assertEqual(latest["status"], "complete")
+            self.assertEqual(latest["mode"], "survey_only")
+            self.assertTrue(Path(latest["audit"]).is_file())
+            self.assertFalse((root / "LATEST.json").exists())
+            lock.close.assert_not_called()
 
     def test_check_preserves_latest_analysis_exactly(self):
         with tempfile.TemporaryDirectory() as temporary:

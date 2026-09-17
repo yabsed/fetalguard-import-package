@@ -13,6 +13,8 @@ from sklearn.metrics import average_precision_score
 from .common import note, table, write_json, read_json
 from .ctgnet import CTGNetMini, count_parameters
 from .evaluation import load_segments, threshold90, evaluate, paired
+from .telemetry import emit
+from .survey import write_csv
 
 
 CAPACITY_ARMS = {"small": lambda width: width <= 32, "medium": lambda width: width >= 64}
@@ -120,6 +122,7 @@ def train_one(x, frame, width, mode, seed, out, cfg):
     completed = out / "complete.json"
     if completed.exists():
         model.load_state_dict(torch.load(out / "best.pt", map_location=device, weights_only=True))
+        emit("fit_reused", family="cnn", job=str(out), seed=seed)
         return model, read_json(completed)
     last = out / "last.pt"
     begin, best, best_epoch, stale, history = 0, -1.0, -1, 0, []
@@ -134,10 +137,17 @@ def train_one(x, frame, width, mode, seed, out, cfg):
         if device.type == "cuda" and checkpoint.get("cuda_rng"):
             torch.cuda.set_rng_state_all([v.cpu() for v in checkpoint["cuda_rng"]])
     started = time.monotonic()
+    emit("fit_resumed" if begin else "fit_started", family="cnn", job=str(out), seed=seed,
+         next_epoch=begin + 1, cap=opts["cnn_epochs"], patience=opts["cnn_patience"])
+    history_columns = ["epoch", "train_loss", "validation_auprc", "learning_rate", "epoch_seconds"]
+    if history:
+        write_csv(out / "history.csv", history, history_columns)
     train_indices = np.flatnonzero(train)
     for epoch in range(begin, opts["cnn_epochs"]):
         if stale >= opts["cnn_patience"]:
             break
+        epoch_started = time.monotonic()
+        learning_rate = float(optimizer.param_groups[0]["lr"])
         model.train()
         order = np.random.default_rng(seed + epoch * 10007).permutation(train_indices)
         total_loss = 0.0
@@ -154,7 +164,8 @@ def train_one(x, frame, width, mode, seed, out, cfg):
             total_loss += float(loss.detach().cpu()) * len(idx)
         scheduler.step()
         metric = float(average_precision_score(y[val], scores(model, x[val], device)))
-        history.append(dict(epoch=epoch + 1, train_loss=total_loss / len(order), validation_auprc=metric))
+        history.append(dict(epoch=epoch + 1, train_loss=total_loss / len(order), validation_auprc=metric,
+                            learning_rate=learning_rate, epoch_seconds=time.monotonic() - epoch_started))
         if metric > best + 1e-8:
             best, best_epoch, stale = metric, epoch + 1, 0
             save_state(out / "best.pt", {k: v.detach().cpu() for k, v in model.state_dict().items()})
@@ -163,14 +174,24 @@ def train_one(x, frame, width, mode, seed, out, cfg):
         save_state(last, dict(model=model.state_dict(), optimizer=optimizer.state_dict(), scheduler=scheduler.state_dict(),
                    next_epoch=epoch + 1, best=best, best_epoch=best_epoch, stale=stale, history=history,
                    rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state_all() if device.type == "cuda" else []))
+        write_csv(out / "history.csv", history, history_columns)
+        write_json(out / "training_state.json", dict(epoch=epoch + 1, best_epoch=best_epoch, stale_epochs=stale,
+                   cap=opts["cnn_epochs"], patience=opts["cnn_patience"], status="running_or_interrupted"))
+        emit("epoch_finished", family="cnn", job=str(out), best_epoch=best_epoch, stale_epochs=stale,
+             **history[-1])
         if epoch == 0 or (epoch + 1) % 10 == 0:
             note(f"CNN {mode} w={width} seed={seed} epoch={epoch + 1}: val AP={metric:.4f}, best={best:.4f}")
     model.load_state_dict(torch.load(out / "best.pt", map_location=device, weights_only=True))
     result = dict(width=width, normalization=mode, seed=seed, parameters=count_parameters(model),
                   best_epoch=best_epoch, epochs_run=len(history), hit_cap=len(history) >= opts["cnn_epochs"],
-                  validation_auprc=best, seconds_this_invocation=time.monotonic() - started)
-    pd.DataFrame(history).to_csv(out / "history.csv", index=False)
+                  validation_auprc=best, seconds_this_invocation=time.monotonic() - started,
+                  stale_epochs=stale, patience=opts["cnn_patience"], cap=opts["cnn_epochs"],
+                  patience_met=stale >= opts["cnn_patience"],
+                  stop_reason="epoch_cap" if len(history) >= opts["cnn_epochs"] else "early_stopping")
+    write_csv(out / "history.csv", history, history_columns)
+    write_json(out / "training_state.json", dict(result, status="complete"))
     write_json(completed, result)
+    emit("fit_finished", family="cnn", job=str(out), **result)
     return model, result
 
 

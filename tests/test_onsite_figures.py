@@ -97,6 +97,8 @@ class OnsiteFigureTests(unittest.TestCase):
             write_json(root / "status.json", {"status": "complete"})
             (internal / "report").mkdir()
             (internal / "report/report.html").write_text("synthetic report")
+            (internal / "visit_audit").mkdir()
+            (internal / "visit_audit/index.html").write_text("first visit diagnostic")
             manifest = root / "export_review/EXPORT_MANIFEST.json"
             write_json(manifest, {"schema_version": 3})
             original = manifest.read_bytes()
@@ -104,9 +106,12 @@ class OnsiteFigureTests(unittest.TestCase):
                 index = build_existing_run(root)
                 self.assertEqual(index, root / "export_review/onsite_figures/index.html")
                 self.assertIn("../../internal/report/report.html", index.read_text())
+                self.assertIn("../../internal/visit_audit/index.html", index.read_text())
                 self.assertTrue((index.parent / "../../internal/report/report.html").is_file())
                 self.assertEqual(manifest.read_bytes(), original)
                 self.assertFalse((internal / "onsite_figures").exists())
+            # Diagnostic views are mutable; guide source hashes must not depend on them.
+            (internal / "visit_audit/index.html").write_text("refreshed diagnostic after resume")
             with patch("fg.onsite_figures.run_onsite_figures", side_effect=AssertionError("must recover without rendering")):
                 recovered = build_onsite_figures(internal, index.parent, {"profile": "mock"})
                 self.assertEqual(recovered, index)

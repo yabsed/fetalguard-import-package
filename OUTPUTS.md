@@ -14,6 +14,10 @@
 │   ├── data/ · splits/
 │   ├── experiment_a/ · experiment_b/
 │   ├── supplementary/ · official/
+│   ├── visit_audit/             # 비선별 내부용, 실패/재개에도 갱신
+│   │   ├── index.html · summary.json · questions.md
+│   │   ├── training_diagnostics.csv · stage_timings.csv · next_visit_plan.csv
+│   │   └── attempts/           # 결과 루트 visits/의 이번/이전 일지 참조
 │   └── report/report.html · case_review.html · case_review.csv · case_*.png
 └── export_review/               # 현장 검토·심사 준비 자료
     ├── onsite_figures/          # 비선별 현장 전용: 반출 후보가 아님
@@ -30,6 +34,10 @@
 ```
 
 `export_review/`는 현장용과 심사용을 함께 열어보는 작업 폴더다. 아래 비교의 오른쪽은 `onsite_figures/`를 제외한 선별 집계에만 해당한다. 현장 그림에는 개별 SHAP·실제 값 범위·원 사이트 코드가 있다.
+
+실행 ID가 만들어지기 전의 환경/파싱 실패도 보존하도록, 결과 루트에는 별도로 `visits/<방문ID>/internal/visit_audit/`가 생긴다. `survey/`에 원천 조사 CSV·이슈·JSON 요약, 상위에 `events.jsonl`, `console.log`, `resources.jsonl`, 상태·실패 기록이 있다. 조사만 실행했거나 사전검사에서 실패하면 이곳의 `index.html`을 연다. 최신 위치는 `LATEST_VISIT.json`을 따른다. 정상 분석은 `LATEST.json`에도 `visit_audit` 링크를 제공한다. 원천 CSV/로그는 ID·경로를 포함할 수 있어 **반출 심사 집계와 별개**다. 결과를 보존할 때 분석 폴더만이 아니라 `visits/`도 함께 유지한다.
+
+`internal/visit_audit/index.html`에는 원천 ID 연결 그래프, 기관 코드별 보간 전 FHR 0 비율, 후보별 상한/patience 상태와 학습 곡선, 완료 단계 소요 시간, 다음 방문 준비표가 있다. CNN 전체와 상한 도달 트리 최대 12개의 곡선을 화면에 표시하고 모든 후보의 원본 이력 위치를 CSV에 남긴다. 학습 loss와 validation 지표는 독립 축이다. 기존 결과의 미수집 이력/자원은 새로 만들어내지 않는다. 산모 수 learning curve는 미실행으로 표시한다.
 
 | 구분 | 내부 전용 `internal/` | 선별 집계 (`export_review/onsite_figures/` 제외) |
 |---|---|---|

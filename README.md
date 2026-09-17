@@ -6,7 +6,41 @@
 
 이미 끝난 실행에는 `python -B tools/build_onsite_figures.py /결과/full-실행해시`로 **재학습 없이** 추가한다. 새 schema 3 실행에서는 `export_review/`에 생성하고, 과거 실행에는 기존 레이아웃을 보존해 `internal/`에 추가한다. 기존 폴더가 있으면 `--name onsite_figures_v2`처럼 새 이름을 지정한다. 이 자료는 개별 구간 SHAP·원 사이트 코드·실제 값 범위를 포함하는 현장 전용이며, `export_review` 안에 있어도 선별된 반출 후보가 아니다.
 
-첫 방문에서 무엇을 조사하고 두 번째 방문의 실험을 어떻게 결정할지는 [FIRST_VISIT_STRATEGY.md](FIRST_VISIT_STRATEGY.md)에 정리했다. 현재 수집되는 정보와 추가 개발이 필요한 구조 조사·학습 진단·실행 일지를 구분한다.
+첫 방문에서 무엇을 조사하고 두 번째 방문의 실험을 어떻게 결정할지는 [FIRST_VISIT_STRATEGY.md](FIRST_VISIT_STRATEGY.md)에 정리했다. 이제 **학습 전 원천 조사 → 기존 실험 → 학습 종료/비용 진단 → 다음 방문 준비표**를 자동 생성한다. 시작 페이지는 `internal/visit_audit/index.html`이며 현장 그림 페이지에서도 연결된다. 로그·원천 통계는 내부 전용이고 반출 선별 대상에 자동 포함되지 않는다.
+
+## 첫 방문 조사와 실행 일지
+
+기존 전체 실행 명령을 그대로 쓰면 조사·일지를 함께 남긴다. 현장 입력이 낯설거나 GPU/학습 환경이 준비되지 않았을 때는 **조사만 먼저** 실행할 수 있다. 표준 라이브러리 기반 조사이며 ML 환경 사전검사·학습은 하지 않는다.
+
+```bash
+# 저장소 루트에서 로컬 원천 데이터 조사만
+FETALGUARD_PYTHON=/home/yabsed/miniconda3/bin/python \
+bash 본선/02-반입할-파일/RUN.sh \
+  --survey-only \
+  --data "$PWD/dataset/korean-ctg/dataset" \
+  --output "$PWD/.scratch/first-visit-survey"
+```
+
+결과 폴더의 `LATEST_VISIT.json`이 최신 조사 보고서와 일지 위치를 가리킨다. Jupyter에는 **데이터 조사만** 버튼이 있다. 정상 실행에서는 `LATEST.json`의 `visit_audit`도 확인할 수 있다. `--survey-only`와 `--check`는 기존 `LATEST.json` 분석 포인터를 덮어쓰지 않는다.
+
+- 원천 조사: 파일/키/타입/9999·빈칸 분포, ID별 파일 연결, 형식·길이·간격 변종, 보간 전 FHR/TOCO 0·평탄 구간·비정상 수치, 기관 코드별 품질, 서로 다른 ID의 동일 원천 신호 표현. 파싱 실패는 기록하고 다른 파일 조사를 계속한다. 엄격한 학습 입력 계약은 그대로다.
+- 실행 일지: 패키지 검사 전부터 `visits/<방문ID>/internal/visit_audit/`에 `events.jsonl`, `console.log`, 15초 주기의 `resources.jsonl`을 저장한다. 사전검사 실패에도 남는다. Python stdout/stderr를 보존하며 일부 native 라이브러리 직접 출력은 빠질 수 있다. CPU는 프로세스 누적/구간 사용량, RAM은 지원되는 OS에서 프로세스 RSS, GPU/VRAM은 **장치 전체** 관측이다. 지원하지 않는 계측은 미수집으로 남긴다.
+- 학습 진단: CNN은 매 epoch의 loss·validation AP·실제 시작 학습률·시간을 저장한다. CatBoost/XGBoost는 완료한 fit의 실제 반복 이력과 최고 반복·상한·patience를 저장한다. 최고 모델에 남은 트리 개수를 총 학습 반복 수로 간주하지 않는다. fit 도중 강제 종료한 트리의 반복 이력은 복구할 수 없으며 시작/실패 이벤트를 확인한다.
+- 준비표: 관측·근거·가능한 설명·다음 비교·바꿀 한 요소·필수 입력·비용의 측정 여부·판단 기준을 `next_visit_plan.csv`에 남긴다. `questions.md`에는 기관 답변을 기록하며 보고서를 다시 생성해도 덮어쓰지 않는다.
+
+원천 통계는 **전체 파일/원천 구간** 기준이므로 중복 배포·두 태아가 포함될 수 있다. 최종 학습의 선택 태아·산모·제외 후 구간과 분모가 다르다. 파일 연결은 분석 적격 판정이 아니다. 출생일을 측정 시각으로 대용하지 않으며 라벨/단위/0의 의미는 기관에 확인한다.
+
+Ctrl+C 및 지원되는 환경의 SIGTERM에서는 실패/중단 요약을 생성한다. 전원 차단·SIGKILL에서는 이미 저장한 일지와 마지막 체크포인트만 남고 최종 상태가 `running`으로 남을 수 있다. 결과 루트 전체(특히 `visits/`)를 내부에 보존해야 진단의 상대 링크가 유지된다. 진단 페이지는 재개 시 갱신하는 뷰이며 실험 완료 해시나 선별 집계에 포함하지 않는다.
+
+기존 실행의 이력으로 **재학습 없이** 진단만 만들 수도 있다. 원천 조사를 다시 수행하지 않으며 과거에 기록하지 않은 트리 이력·자원 로그는 미수집으로 표시한다.
+
+```bash
+python -B tools/build_visit_audit.py /결과/full-실행해시
+# 기존 진단/담당자 답변을 보존하려면 새 이름 또는 새 외부 출력 경로 사용
+python -B tools/build_visit_audit.py /결과/full-실행해시 --name visit_audit_v2
+```
+
+산모 수 learning curve와 추가 예산 학습은 **아직 자동 실행하지 않는다**. 데이터 양 포화는 미측정으로 표시한다. 이번 변경은 실험 예산·분할·모델 선택 규칙을 바꾸지 않으며 test 성능으로 연장 후보를 정하지 않는다.
 
 **그래프 이미지만 반출 심사에 제출할 경우:** 실행 후 **`export_review/images/`의 PNG만** 선택한다. 주 성능·차이·CI부터 인자 설명, CNN·EMR·LOSO·아웃컴까지 28개 집계 영역을 페이지별 고해상도 그래프로 만든다. CSV·HTML·JSON·PDF는 이 이미지 폴더에 들어가지 않는다. 이미지도 승인 전 심사 후보이며, 개별 파형·개인별 예측은 포함하지 않는다. 상세 구성은 [OUTPUTS.md](OUTPUTS.md)에 있다.
 

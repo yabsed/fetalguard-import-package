@@ -16,6 +16,8 @@ from xgboost import XGBClassifier
 from .common import note, table, write_json, require_two_classes
 from .features import CAT18, CAT28, GROUPS, ROBUST
 from .evaluation import group_folds, load_segments, threshold90, evaluate, paired
+from .telemetry import emit
+from .survey import write_csv
 
 
 def logistic():
@@ -131,17 +133,45 @@ def fit_tree(train, val, columns, cfg, seed, kind="cat", path=None):
             early_stopping_rounds=opts["tree_patience"])
     if path is not None and path.exists():
         model.load_model(str(path))
+        emit("fit_reused", family=kind, job=str(path), seed=seed,
+             history_available=path.with_name(path.name + ".training.json").is_file())
         return model
-    if kind == "cat":
-        model.fit(train[columns], train.target, eval_set=(val[columns], val.target),
-                  early_stopping_rounds=opts["tree_patience"])
-    else:
-        model.fit(train[columns], train.target, eval_set=[(val[columns], val.target)], verbose=False)
+    started = time.monotonic()
+    emit("fit_started", family=kind, job=str(path), seed=seed, train_rows=len(train), validation_rows=len(val))
+    try:
+        if kind == "cat":
+            model.fit(train[columns], train.target, eval_set=(val[columns], val.target),
+                      early_stopping_rounds=opts["tree_patience"])
+        else:
+            model.fit(train[columns], train.target, eval_set=[(val[columns], val.target)], verbose=False)
+    except BaseException as exc:
+        emit("fit_failed", family=kind, job=str(path), seed=seed,
+             error_type=type(exc).__name__, seconds=time.monotonic() - started)
+        raise
     if path is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        history = model.get_evals_result() if kind == "cat" else model.evals_result()
+        history_columns = {f"{split}/{metric}": values for split, metrics in history.items() for metric, values in metrics.items()}
+        count = max((len(values) for values in history_columns.values()), default=0)
+        best = int(model.get_best_iteration() if kind == "cat" else model.best_iteration) + 1
+        score_column = "validation/PRAUC" if kind == "cat" else "validation_0/aucpr"
+        stopped = count < opts["tree_iterations"] and count - best >= opts["tree_patience"]
+        # Save diagnostics before the model: a crash cannot leave a reusable model without its history.
+        write_csv(path.with_name(path.name + ".history.csv"),
+                  [dict(iteration=i + 1, **{key: values[i] for key, values in history_columns.items() if i < len(values)})
+                   for i in range(count)], ["iteration"] + list(history_columns))
+        write_json(path.with_name(path.name + ".training.json"), dict(family=kind, seed=seed,
+                   iterations_run=count, best_iteration=best, stale_iterations=count - best,
+                   cap=opts["tree_iterations"], patience=opts["tree_patience"],
+                   hit_cap=count >= opts["tree_iterations"], patience_met=count - best >= opts["tree_patience"],
+                   stop_reason="early_stopping" if stopped else "iteration_cap" if count >= opts["tree_iterations"] else "stopped_before_cap",
+                   score_column=score_column, score_metric="CatBoost PRAUC" if kind == "cat" else "XGBoost aucpr",
+                   seconds=time.monotonic() - started, train_rows=len(train), validation_rows=len(val),
+                   scope="training_and_validation_only", learning_rate=0.05))
         temp = path.with_name("temporary_" + path.name)
         model.save_model(str(temp))
         temp.replace(path)
+    emit("fit_finished", family=kind, job=str(path), seed=seed, seconds=time.monotonic() - started)
     return model
 
 
@@ -153,13 +183,19 @@ def fit_variant(train, val, columns, cfg, seed, kind, path):
     if kind != "logistic":
         return fit_tree(train, val, columns, cfg, seed, kind, path)
     if path.exists():
+        emit("fit_reused", family="logistic", job=str(path), seed=seed)
         return load(path)
     require_two_classes(train.target, "logistic training")
+    started = time.monotonic()
+    emit("fit_started", family="logistic", job=str(path), seed=seed, train_rows=len(train))
     model = logistic().fit(train[columns], train.target)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name("temporary_" + path.name)
     dump(model, temp)
     temp.replace(path)
+    iterations = int(model[-1].n_iter_.max())
+    emit("fit_finished", family="logistic", job=str(path), seed=seed, iterations=iterations,
+         hit_cap=iterations >= model[-1].max_iter, seconds=time.monotonic() - started)
     return model
 
 

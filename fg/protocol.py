@@ -1,5 +1,4 @@
 """Versioned, predeclared comparisons. Written before any model is fitted."""
-from .common import write_json
 
 DESIGN_VERSION = "2.0"
 
@@ -52,4 +51,5 @@ def protocol(cfg):
 
 
 def write_protocol(run, cfg):
+    from .common import write_json
     write_json(run / "protocol.json", protocol(cfg))
