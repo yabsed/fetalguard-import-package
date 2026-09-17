@@ -63,6 +63,17 @@ class RunLayoutTests(unittest.TestCase):
             self.assertFalse((analysis / "failure.json").exists())
             lock.close.assert_called_once()
 
+    def test_onsite_stage_is_internal_and_linked_in_latest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, stack, lock = self.configured_runner(temporary, check=False)
+            with stack, patch.object(run, "run_stage") as stage:
+                run.main()
+            latest = json.loads((root / "LATEST.json").read_text())
+            self.assertEqual(Path(latest["onsite_figures"]), Path(latest["internal"]) / "onsite_figures/index.html")
+            names = [call.args[1] for call in stage.call_args_list]
+            self.assertEqual(names[-3:], ["report", "onsite_figures", "export_review"])
+            self.assertEqual(stage.call_args_list[-2].args[0], Path(latest["internal"]))
+
 
 if __name__ == "__main__":
     unittest.main()

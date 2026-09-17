@@ -113,6 +113,15 @@ def validate_run(path, expect_records=None, check_original_xgb=False):
     assert status["status"] == "complete", status
     for stage in ("data", "splits", "experiment_a", "experiment_b", "supplementary", "official", "report"):
         stage_hashes(run, stage)
+    if (run / ".state/onsite_figures.json").exists():
+        stage_hashes(run, "onsite_figures")
+    if (run / "onsite_figures").is_dir():
+        guide = read_json(run / "onsite_figures/manifest.json")
+        for name, digest in guide["files"].items():
+            assert Path(name).name == name and sha256(run / "onsite_figures" / name) == digest, ("onsite_figures", name)
+        for name, digest in guide["source_files"].items():
+            assert not Path(name).is_absolute() and ".." not in Path(name).parts
+            assert sha256(run / name) == digest, ("onsite_figures source", name)
     summary = read_json(run / "data/summary.json")
     if expect_records is not None:
         assert summary["records"] == expect_records, summary
