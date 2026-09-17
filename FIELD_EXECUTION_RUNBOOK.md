@@ -236,7 +236,7 @@ python -B run.py --survey-only \
 
 이 작업도 데이터 전량을 순회하므로 파일이 많거나 저장장치가 느리면 시간이 걸린다. 원천 파일을 수정하지는 않지만, 결과 일지에는 원본의 상대 경로와 ID가 들어갈 수 있으므로 결과 폴더는 내부 자료로 다룬다.
 
-완료 후 `/팀폴더/분석결과/LATEST_VISIT.json`을 연다. 그 안의 `audit` 또는 `internal_audit` 경로가 최신 HTML 보고서다. 파일 탐색기에서 해당 `index.html`을 웹 브라우저로 열어도 인터넷은 필요하지 않다.
+완료 후 `/팀폴더/분석결과/LATEST_VISIT.json`을 연다. `export_audit`는 생성된 반출 심사용 집계 보고서, `internal_audit`는 내부 상세 보고서, `journal`은 원본 로그·조사 파일이 있는 폴더다. `audit`은 반출용 보고서가 생성됐으면 그것을, 아니면 내부 보고서를 가리킨다. 파일 탐색기에서 해당 `index.html`을 웹 브라우저로 열어도 인터넷은 필요하지 않다.
 
 ### 5.3 조사 보고서에서 볼 것
 
@@ -492,7 +492,7 @@ python -B tools/validate_run.py "/팀폴더/분석결과/full-16자리해시"
 2. 검증 명령: `PASS`
 3. `full-.../export_review/onsite_figures/index.html`: 현장 결과를 질문 순서로 검토
 4. `full-.../internal/report/report.html`: 내부 상세 보고서
-5. `full-.../export_review/visit_audit/index.html`: 데이터·학습·시간·자원·다음 방문 진단
+5. `LATEST.json`의 `visit_audit` 경로: 데이터·학습·시간·자원·다음 방문 진단. 첫 생성은 `full-.../export_review/visit_audit/index.html`이며, 재실행 시 `visit_audit_002` 등으로 추가되므로 포인터가 가리키는 최신 파일을 연다.
 6. `LATEST.json`: 위 최신 분석 위치를 가리키는 포인터
 7. `LATEST_VISIT.json`: 가장 최근 실행 시도의 진단 위치
 
@@ -500,7 +500,7 @@ python -B tools/validate_run.py "/팀폴더/분석결과/full-16자리해시"
 
 ### 12.2 실패
 
-실패 시 먼저 `/팀폴더/분석결과/LATEST_VISIT.json`을 연다. 그 파일이 가리키는 내부 진단 폴더에서 다음을 확인한다.
+실패 시 먼저 `/팀폴더/분석결과/LATEST_VISIT.json`을 연다. 그 안의 **`journal` 경로**(보통 `visits/<방문ID>/internal/visit_audit/`)에서 다음을 확인한다. `audit`이나 `export_audit`이 가리키는 반출용 요약에는 원본 로그가 없다.
 
 - `index.html`: 사람이 읽는 요약
 - `console.log`: Python 표준 출력과 오류
@@ -509,7 +509,7 @@ python -B tools/validate_run.py "/팀폴더/분석결과/full-16자리해시"
 - `resources.jsonl`: 실행 당시 자원 표본
 - `survey/`: 데이터 조사 결과
 
-분석 실행 ID가 만들어진 뒤 실패했다면 `full-.../status.json`과 `full-.../internal/failure.json`도 확인한다.
+분석 상태 파일이 생성된 뒤 실패했다면 `full-.../status.json`의 `details` 경로도 확인한다. 일반 분석 실패는 `internal/failure.json`, 반출용 진단 생성 실패는 `internal/export_diagnostics_failure.json`에 기록된다.
 
 오류 메시지의 마지막 한 줄만 복사하지 말고, 위 폴더 전체를 내부에 보존한다. 경로와 ID가 포함될 수 있으므로 승인 없이 외부 메신저나 개인 저장장치로 보내지 않는다.
 
@@ -581,13 +581,15 @@ python -B tools/validate_run.py "/팀폴더/분석결과/full-16자리해시"
 └── LATEST_VISIT.json
 ```
 
-`full-.../internal/`에는 원본 경로, 식별자, 개인별 예측, 신호, 모델 가중치가 포함될 수 있다. `visits/`의 로그와 조사 CSV에도 ID와 경로가 포함될 수 있다. 둘 다 내부 전용이다.
+`full-.../internal/`에는 원본 경로, 식별자, 개인별 예측, 신호, 모델 가중치가 포함될 수 있다. `visits/<방문ID>/internal/`의 로그와 원천 조사 CSV에도 ID와 경로가 포함될 수 있다. 이 `internal/` 자료는 내부 전용이다.
+
+조사 전용·사전검사·주 심사 묶음 생성 전 실패의 선별 집계는 `visits/<방문ID>/export_review/visit_audit/`에 생성된다. 이 폴더는 반출 심사 후보이며, 정확한 최신 위치는 `LATEST_VISIT.json`의 `export_audit`에서 확인한다. 조사 전용·사전검사는 HTML·CSV를 생성하며 PNG는 생성하지 않는다. `visits/` 전체를 복사하지 말고 그 아래 `export_review/`의 승인된 자료만 선택한다.
 
 `export_review/`라는 이름은 자동 반출 승인을 뜻하지 않는다. 기본 상태는 `pending_institution_review`다.
 
 - 현장 이해 시작점: `export_review/onsite_figures/index.html`
 - 성능 이미지 심사 후보: `export_review/images/`의 PNG
-- 추가 진단 이미지 심사 후보: `export_review/visit_audit/images/`의 PNG
+- 추가 진단 이미지 심사 후보: 최신 진단 폴더의 `images/` PNG (`visit_audit/`, 재실행 시 `visit_audit_002/` 등)
 - CSV 심사 후보: 각 검토 폴더의 `csv/`
 - 현장 전용이며 자동 반출 후보가 아닌 것: `export_review/onsite_figures/`
 
@@ -661,7 +663,7 @@ full 실행 폴더:
 - [ ] 실패가 있었다면 `console.log`, `failure.json`, `events.jsonl`을 보존했다.
 - [ ] 데이터 의미에 관한 미확인 질문과 기관 답변을 기록했다.
 - [ ] mock 수치를 본 분석 결과로 사용하지 않았다.
-- [ ] `internal/`과 `visits/`를 외부로 가져가지 않았다.
+- [ ] `internal/` 자료와 `visits/` 전체를 외부로 가져가지 않았다. 방문별 심사 후보는 `visits/<방문ID>/export_review/`에서 구분했다.
 - [ ] 반출 후보도 기관 승인을 받기 전에는 복사하지 않았다.
 
 더 자세한 데이터·분석 계약은 [README.md](README.md), 첫 방문의 의사결정 전략은 [FIRST_VISIT_STRATEGY.md](FIRST_VISIT_STRATEGY.md), 산출물과 반출 구분은 [OUTPUTS.md](OUTPUTS.md), 로컬 검증 근거는 [MOCK_TEST.md](MOCK_TEST.md)를 참고한다.
