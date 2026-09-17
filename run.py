@@ -131,6 +131,7 @@ def run_stage(run, name, action, *, target=None):
 def _run_stage(run, name, action, *, target=None):
     from fg.common import sha256, write_json, read_json, note
     from fg.telemetry import emit
+    from fg.resilience import ArtifactIntegrityError
     target = Path(target) if target is not None else run / name
     marker = run / ".state" / (name + ".json")
     if marker.exists():
@@ -138,8 +139,8 @@ def _run_stage(run, name, action, *, target=None):
         if all((target / p).is_file() and sha256(target / p) == digest for p, digest in completed["files"].items()):
             note(f"재개: {name} 완료 검증됨")
             emit("stage_reused", original_seconds=completed.get("seconds"))
-            return
-        raise ValueError(f"완료 단계 산출물이 변경/삭제됨: {target}. 원본을 복구하거나 다른 --output 경로로 재실행하세요.")
+            return completed.get("outcome", {"status": "complete"})
+        raise ArtifactIntegrityError(f"완료 단계 산출물이 변경/삭제됨: {target}. 원본을 복구하거나 다른 --output 경로로 재실행하세요.")
     note(f"시작: {name}")
     started = time.monotonic()
     target.mkdir(parents=True, exist_ok=True)
@@ -148,9 +149,14 @@ def _run_stage(run, name, action, *, target=None):
     files = {str(p.relative_to(target)): sha256(p) for p in sorted(target.rglob("*")) if p.is_file()}
     if not files:
         raise RuntimeError(f"Stage produced no artifacts: {name}")
-    write_json(marker, {"seconds": time.monotonic() - started, "files": files})
+    issue_file = target / "issues_summary.json"
+    if name == "onsite_figures":
+        issue_file = run / "internal/onsite_issues/issues_summary.json"
+    outcome = read_json(issue_file) if issue_file.exists() else {"status": "complete"}
+    write_json(marker, {"seconds": time.monotonic() - started, "files": files, "outcome": outcome})
     emit("stage_artifacts_hashed", seconds=time.monotonic() - hash_started, files=len(files))
-    note(f"완료: {name} ({time.monotonic() - started:.1f}s)")
+    note(f"완료: {name} ({time.monotonic() - started:.1f}s; {outcome['status']})")
+    return outcome
 
 
 def acquire_lock(run):
@@ -206,7 +212,7 @@ def execute(args, cfg, visit):
         environment = preflight(cfg)
     # Imports above may query the platform via subprocess; scientific runtime below is offline.
     sys.addaudithook(forbid_network)
-    from fg.data import discover, prepare
+    from fg.data import discover
     note("원천 데이터 목록·중복·해시 확인")
     with scope("input_hash_and_discovery"):
         catalog, fingerprints, duplicates = discover(Path(cfg["data_root"]))
@@ -233,45 +239,94 @@ def execute(args, cfg, visit):
         "internal_visit_audit": str(run / "visit_audit/index.html"),
         "export_report": str(run_root / "export_review/report.html"),
         "export_images": str(run_root / "export_review/images"), "export_status": "pending_institution_review"})
-    from fg.evaluation import create_splits
-    from fg.models import run_a
-    from fg.cnn import run_b
-    from fg.supplementary import run_supplementary
-    from fg.official import run_official
-    from fg.report import run_report
-    from fg.onsite_figures import build_onsite_figures
-    from fg.export_review import run_export_review
-    status = run_root / "status.json"
-    write_json(status, {"status": "running", "profile": cfg["profile"], "started": datetime.now(timezone.utc).isoformat()})
     try:
-        run_stage(run, "data", lambda out: prepare(catalog, out, cfg))
-        run_stage(run, "splits", lambda out: create_splits(run / "data", out, cfg))
-        run_stage(run, "experiment_a", lambda out: run_a(run, out, cfg))
-        run_stage(run, "experiment_b", lambda out: run_b(run, out, cfg))
-        run_stage(run, "supplementary", lambda out: run_supplementary(run, out, cfg))
-        run_stage(run, "official", lambda out: run_official(PACKAGE, run, out, cfg, catalog))
-        run_stage(run, "report", lambda out: run_report(run, out, cfg))
-        # Mutable diagnostic views stay outside immutable experiment stage hashes.
-        visit.refresh()
-        run_stage(run_root, "export_review", lambda out: run_export_review(run, out, cfg))
-        run_stage(run_root, "onsite_figures", lambda out: build_onsite_figures(run, out, cfg),
-                  target=run_root / "export_review/onsite_figures")
+        execute_analysis(run, run_root, cfg, catalog, visit)
     except BaseException as exc:
-        write_json(run / "failure.json", {"status": "failed", "error": str(exc),
-                   "type": type(exc).__name__, "traceback": traceback.format_exc()})
-        write_json(status, {"status": "failed", "type": type(exc).__name__,
-                            "details": "internal/failure.json"})
+        # Explicit interrupt, integrity, permission, or storage failure is fatal.
+        # Try to leave a truthful status; unavailable storage cannot be repaired here.
+        try:
+            write_json(run / "failure.json", {"type": type(exc).__name__, "error": str(exc),
+                                              "traceback": traceback.format_exc()})
+            write_json(run_root / "status.json", {"status": "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
+                                                  "type": type(exc).__name__, "details": "internal/failure.json"})
+        except OSError:
+            pass
         raise
-    write_json(status, {"status": "complete", "profile": cfg["profile"], "design_version": cfg["design_version"],
-                        "report": str(run / "report/report.html"), "export_review": str(run_root / "export_review"),
-                        "onsite_figures": str(run_root / "export_review/onsite_figures/index.html"),
-                        "export_status": "pending_institution_review",
-                        "finished": datetime.now(timezone.utc).isoformat()})
-    note(f"SUCCESS — 현장 보고서: {run / 'report/report.html'}")
-    note(f"현장 이해용 그래프: {run_root / 'export_review/onsite_figures/index.html'}")
-    note("반출용 방문 진단·학습곡선은 실행 일지 종료 후 export_review/visit_audit/에 생성합니다.")
-    note(f"반출 심사용 집계 결과 (승인 전): {run_root / 'export_review/report.html'}")
-    note(f"이미지 전용 심사 폴더 (PNG만): {run_root / 'export_review/images'}")
+
+
+def execute_analysis(run, run_root, cfg, catalog, visit):
+    """Continue independent stages; never call a failed prerequisite usable."""
+    from fg.resilience import Issues, partial_report
+    from fg.telemetry import save_json
+    issues = Issues(run / "pipeline_issues")
+    stages = {}
+    status_path = run_root / "status.json"
+
+    def snapshot(final=False):
+        state = ("complete_with_issues" if issues.rows or any(
+            row["status"] != "complete" for row in stages.values()) else "complete") if final else "running"
+        value = dict(status=state, stages=stages, profile=cfg["profile"],
+                     design_version=cfg["design_version"], report=str(run / "report/report.html"),
+                     export_review=str(run_root / "export_review"),
+                     export_status="pending_institution_review" if (run_root / "export_review/EXPORT_MANIFEST.json").is_file() else "unavailable",
+                     finished=datetime.now(timezone.utc).isoformat() if final else None)
+        save_json(run / "pipeline_status.json", value)
+        # Public status contains fixed stage names/status only; exceptions stay internal.
+        save_json(status_path, value)
+        if final:
+            visit.analysis_status = state
+        return state
+
+    def call(module, function, *values):
+        return getattr(importlib.import_module(module), function)(*values)
+
+    def attempt(name, module, function, values, dependencies=(), owner=None, target=None):
+        unavailable = [dep for dep in dependencies if stages.get(dep, {}).get("status") not in {"complete", "complete_with_issues"}]
+        if unavailable:
+            stages[name] = dict(status="unavailable", blocked_by=unavailable)
+            print(f"미산출: {name} (필수 단계 미완료: {', '.join(unavailable)}); 다음 작업 계속", flush=True)
+            snapshot()
+            return
+        stages[name] = {"status": "running"}
+        snapshot()
+        before = len(issues.rows)
+        with issues.guard(name):
+            result = run_stage(owner or run, name, lambda out: call(module, function, *values, out, cfg), target=target)
+            stages[name] = result if isinstance(result, dict) else {"status": "complete"}
+        if len(issues.rows) != before:
+            stages[name] = {"status": "unavailable" if issues.rows[-1]["status"] == "unavailable" else "failed",
+                            "details": "internal/pipeline_issues/issues.jsonl"}
+        snapshot()
+
+    snapshot()
+    # Data's signature is catalog, out, cfg. Later stages share run, out, cfg.
+    attempt("data", "fg.data", "prepare", (catalog,))
+    attempt("splits", "fg.evaluation", "create_splits", (run / "data",), ("data",))
+    attempt("experiment_a", "fg.models", "run_a", (run,), ("splits",))
+    attempt("experiment_b", "fg.cnn", "run_b", (run,), ("splits",))
+    # Supplementary modules decide independently whether they need splits/models.
+    attempt("supplementary", "fg.supplementary", "run_supplementary", (run,), ("data",))
+    # official wrapper retains its public API but supports split/model-free replay.
+    attempt("official", "fg.official", "run_reference", (run, catalog), ("data",))
+    attempt("report", "fg.report", "run_report", (run,))
+    if stages["report"]["status"] not in {"complete", "complete_with_issues"}:
+        with issues.guard("partial_report"):
+            partial_report(run, run / "report", cfg)
+    visit.refresh()
+    attempt("export_review", "fg.export_review", "run_export_review", (run,), owner=run_root)
+    if stages["export_review"]["status"] in {"complete", "complete_with_issues"}:
+        attempt("onsite_figures", "fg.onsite_figures", "build_onsite_figures", (run,), owner=run_root,
+                target=run_root / "export_review/onsite_figures")
+    else:
+        stages["onsite_figures"] = dict(status="unavailable", blocked_by=["export_review"])
+    state = snapshot(final=True)
+    if stages["report"]["status"] not in {"complete", "complete_with_issues"}:
+        with issues.guard("partial_report_final"):
+            partial_report(run, run / "report", cfg)
+        state = snapshot(final=True)
+    issues.finish()
+    print(f"{state.upper()} — 실행 종료. 내부 보고서: {run / 'report/report.html'}", flush=True)
+    print("미산출·제외 내역: internal/pipeline_status.json 및 각 단계 issues.jsonl. 반출은 승인된 집계만.", flush=True)
 
 
 if __name__ == "__main__":

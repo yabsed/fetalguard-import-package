@@ -4,6 +4,18 @@ import pandas as pd
 from pathlib import Path
 from sklearn.model_selection import StratifiedGroupKFold
 from .common import require_two_classes, write_json, table
+from .resilience import Unavailable
+
+
+def calibration_bins(y, p, bins=10):
+    y, p = np.asarray(y), np.asarray(p)
+    rows = []
+    for k in range(bins):
+        mask = (p >= k / bins) & ((p < (k + 1) / bins) if k < bins - 1 else (p <= 1))
+        if mask.any():
+            rows.append(dict(bin=k, n=int(mask.sum()), mean_prediction=float(p[mask].mean()),
+                             observed=float(y[mask].mean())))
+    return rows
 
 
 def group_folds(frame, n_splits, seed, target="target"):
@@ -19,6 +31,8 @@ def group_folds(frame, n_splits, seed, target="target"):
 def create_splits(data_dir, out, cfg):
     records = table(data_dir / "records.csv")
     usable = records[records.n_kept > 0].reset_index(drop=True)
+    if usable.empty:
+        raise Unavailable("No valid signal records; training and splitting are unavailable")
     prior_file = cfg.get("prior_cohort_file")
     known = set()
     if prior_file:

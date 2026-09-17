@@ -84,16 +84,15 @@ class RunLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root, stack, lock = self.configured_runner(temporary, check=False)
             with stack, patch.object(run, "run_stage", side_effect=ValueError(secret)):
-                with self.assertRaisesRegex(ValueError, "record-PRIVATE"):
-                    run.main()
+                run.main()
             latest = json.loads((root / "LATEST.json").read_text())
             analysis = Path(latest["run"])
             status = json.loads((analysis / "status.json").read_text())
-            self.assertEqual(status, {"status": "failed", "type": "ValueError", "details": "internal/failure.json"})
+            self.assertEqual(status["status"], "complete_with_issues")
             self.assertNotIn(secret, json.dumps(status))
-            failure = json.loads((analysis / status["details"]).read_text())
-            self.assertEqual(failure["error"], secret)
-            self.assertIn(secret, failure["traceback"])
+            failures = (analysis / "internal/pipeline_issues/issues.jsonl").read_text()
+            self.assertIn(secret, failures)
+            self.assertIn(secret, json.loads(failures.splitlines()[0])["traceback"])
             self.assertFalse((analysis / "failure.json").exists())
             lock.close.assert_called_once()
 
@@ -132,13 +131,12 @@ class RunLayoutTests(unittest.TestCase):
             root, stack, lock = self.configured_runner(temporary, check=False)
             with stack, patch.object(run, "run_stage"), \
                     patch("fg.export_diagnostics.build_export_diagnostics", side_effect=ValueError("diagnostic render failed")):
-                with self.assertRaisesRegex(ValueError, "diagnostic render failed"):
-                    run.main()
+                run.main()
             latest = json.loads((root / "LATEST.json").read_text())
             status = json.loads((Path(latest["run"]) / "status.json").read_text())
-            self.assertEqual(status["status"], "failed")
-            self.assertEqual(status["details"], "internal/export_diagnostics_failure.json")
-            self.assertEqual(json.loads((root / "LATEST_VISIT.json").read_text())["status"], "export_diagnostics_failed")
+            self.assertEqual(status["status"], "complete_with_issues")
+            self.assertEqual(status["diagnostics_status"], "failed")
+            self.assertEqual(json.loads((root / "LATEST_VISIT.json").read_text())["status"], "complete_with_issues")
             lock.close.assert_called_once()
 
 

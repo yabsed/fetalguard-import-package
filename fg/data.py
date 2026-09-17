@@ -18,6 +18,7 @@ from .common import numeric, note, read_json, sha256, write_json
 from .features import extract_segment, interpolate_signal, CAT28
 from .feature_rules import preprocess_for_features
 from .signal_io import load_case_signal, parse_window_abnormality
+from .resilience import Issues, Unavailable
 
 PRENATAL = ["Mother.Height", "Mother.Weight", "Mother.Gravida", "Mother.Para", "Mother.SBP", "Mother.DBP",
             "Mother.GHTN", "Mother.Hypertension", "Mother.GDM", "Mother.DM", "Mother.pre-eclampsia"]
@@ -157,105 +158,135 @@ def feature_quality(frame):
 
 def prepare(catalog, out, cfg):
     out.mkdir(parents=True, exist_ok=True)
-    bbox = [bbox_check(rid, read_json(entry["path"]), catalog["images"].get(rid, {}).get("path"))
-            for rid, entry in catalog["labels"].items()]
+    issues = Issues(out)
+    bbox = []
+    for rid, entry in catalog["labels"].items():
+        with issues.guard("bbox:" + rid):
+            bbox.append(bbox_check(rid, read_json(entry["path"]), catalog["images"].get(rid, {}).get("path")))
+    bad_bbox = {r["record_id"] for r in bbox if r["checked"] and not r["valid"]}
+    # A failed box parser cannot establish alignment either.
+    bad_bbox.update(r["job"][5:] for r in issues.rows if r["job"].startswith("bbox:"))
     pd.DataFrame(bbox).to_csv(out / "bbox_audit.csv", index=False)
     failed = [r for r in bbox if r["checked"] and not r["valid"]]
-    if failed and cfg["strict_bbox"]:
-        raise ValueError(f"Bbox 검증 {len(failed)}건 불일치. bbox_audit.csv 확인. strict_bbox=false는 별도 분석을 명시적으로 허용할 때만 사용하세요.")
     records, segments, signals, exclusions, original, corrected, placeholders = [], [], [], [], [], [], Counter()
     unsmoothed, extraction_seconds = [], {"smooth30": 0.0, "smooth0": 0.0}
     emr_fields = Counter()
     emr_missing = Counter()
     annotations = catalog["annotation_person"]
     for number, (rid, entry) in enumerate(annotations.items(), 1):
-        if rid not in catalog["labels"]:
-            raise ValueError(f"Annotation has no label: {rid}")
-        annotation = read_json(entry["path"])
-        label = read_json(catalog["labels"][rid]["path"])
-        if str(label.get("ID")) != rid:
-            raise ValueError(f"Label ID mismatch: {rid}")
-        emr = read_json(catalog["emr"][rid]["path"]) if rid in catalog["emr"] else {}
-        if emr and str(emr.get("ID")) != rid:
-            raise ValueError(f"EMR ID mismatch: {rid}")
-        case = load_case_signal(rid, Path(entry["path"]).parent)
-        flags = parse_window_abnormality(label, case)
-        mid = str(emr.get("Mother.de-identification_ID", "")).strip()
-        if not mid or mid in {"9999", "nan", "None"}:
-            raise ValueError(f"Missing mother ID for {rid}; refusing unsafe record-based split")
-        longest, continuity = longest_source_run(flags, case.selected_segments)
-        rec = dict(record_id=rid, mother_id=mid, site=case.site, is_twin=case.is_twin, n_segments=len(flags),
-                   abnormal_fraction=float(flags.mean()), any_abnormal=int(flags.any()),
-                   longest_abnormal_run=longest, continuity_status=continuity,
-                   image_path=catalog["images"].get(rid, {}).get("path", ""))
-        rec.update({"emr_" + k: numeric(v) for k, v in emr.items() if k != "ID"})
-        rec.update({"label_" + k: numeric(v) for k, v in label.items() if k not in {"ID", "Bbox", "Abnormality"}})
-        birth, mbirth = numeric(emr.get("Birth Date")), numeric(emr.get("Mother.Birth Date"))
-        rec["maternal_age"] = birth // 100 - mbirth // 100 + 1
-        rec["gestational_age"] = numeric(emr.get("GA.wks")) + numeric(emr.get("GA.day", 0)) / 7
-        for field in emr:
-            emr_fields[field] += 1
-            emr_missing[field] += int(not np.isfinite(numeric(emr[field])))
-        for part in annotation.get("data", []):
-            for key in ("baseline", "baseline_var", "accel", "decel", "cervix"):
-                if key in part:
-                    placeholders[(key, str(part[key]))] += 1
-        kept, missing_values = 0, []
-        for index, (fhr, toco, target) in enumerate(zip(case.fhr_windows, case.toco_windows, flags)):
-            if not np.isclose(case.dt * len(fhr), 300):
-                raise ValueError(f"{rid}/{index}: expected 300s window, got {case.dt * len(fhr)}s")
-            if not np.isclose(case.dt, 2) or len(fhr) != 150:
-                raise ValueError(f"{rid}: this approved CNN contract needs 0.5Hz / 150 samples, got dt={case.dt}, N={len(fhr)}")
-            if (fhr < 0).any():
-                raise ValueError(f"{rid}: negative FHR")
-            missing = float((fhr == 0).mean())
-            missing_values.append(missing)
-            if missing > cfg["max_missing_fraction"]:
-                exclusions.append(dict(record_id=rid, seg_idx=index, reason="fhr_missing_gt_threshold", missing_fraction=missing))
-                continue
-            started = time.perf_counter()
-            clean_f, clean_t = preprocess_for_features(fhr, toco, 1 / case.dt)
-            factors = extract_segment(clean_f, clean_t, 1 / case.dt)
-            extraction_seconds["smooth30"] += time.perf_counter() - started
-            started = time.perf_counter()
-            raw_f, raw_t = preprocess_for_features(fhr, toco, 1 / case.dt, smooth_seconds=0)
-            raw_factors = extract_segment(raw_f, raw_t, 1 / case.dt)
-            extraction_seconds["smooth0"] += time.perf_counter() - started
-            if not np.isfinite(list(factors.values())).all():
-                raise ValueError(f"Nonfinite Cat28: {rid}/{index}")
-            if not np.isfinite(list(raw_factors.values())).all():
-                raise ValueError(f"Nonfinite unsmoothed Cat28: {rid}/{index}")
-            unsmoothed.append(dict(record_id=rid, seg_idx=index, **raw_factors))
-            segments.append(dict(record_id=rid, mother_id=mid, site=case.site, seg_idx=index, target=int(target),
-                                 missing_fraction=missing, record_all_normal=int(not flags.any()), **factors))
-            signals.append(interpolate_signal(fhr, toco))
-            kept += 1
-        rec.update(n_kept=kept, missing_fraction=float(np.mean(missing_values)))
-        records.append(rec)
-        if emr:
-            original.append(official_row(rid, emr, label, annotation, case, "original"))
-            corrected.append(official_row(rid, emr, label, annotation, case, "corrected"))
-        if number % 250 == 0:
-            note(f"인자 추출 {number:,}/{len(annotations):,} records; {len(segments):,} segments")
+        # Transactional record buffers: no half-record can misalign CSV and NPY.
+        buffers = (records, segments, signals, exclusions, original, corrected, unsmoothed)
+        lengths = [len(values) for values in buffers]
+        counters = (placeholders, emr_fields, emr_missing)
+        snapshots = [counter.copy() for counter in counters]
+        def rollback():
+            for values, length in zip(buffers, lengths):
+                del values[length:]
+            for counter, snapshot in zip(counters, snapshots):
+                counter.clear()
+                counter.update(snapshot)
+        with issues.guard("record:" + rid, rollback=rollback):
+            if cfg["strict_bbox"] and rid in bad_bbox:
+                raise ValueError("Bbox validation failed or unavailable due to invalid input")
+            if rid not in catalog["labels"]:
+                raise ValueError(f"Annotation has no label: {rid}")
+            annotation = read_json(entry["path"])
+            label = read_json(catalog["labels"][rid]["path"])
+            if str(label.get("ID")) != rid:
+                raise ValueError(f"Label ID mismatch: {rid}")
+            emr = read_json(catalog["emr"][rid]["path"]) if rid in catalog["emr"] else {}
+            if emr and str(emr.get("ID")) != rid:
+                raise ValueError(f"EMR ID mismatch: {rid}")
+            case = load_case_signal(rid, Path(entry["path"]).parent)
+            flags = parse_window_abnormality(label, case)
+            mid = str(emr.get("Mother.de-identification_ID", "")).strip()
+            if not mid or mid in {"9999", "nan", "None"}:
+                raise ValueError(f"Missing mother ID for {rid}; refusing unsafe record-based split")
+            longest, continuity = longest_source_run(flags, case.selected_segments)
+            rec = dict(record_id=rid, mother_id=mid, site=case.site, is_twin=case.is_twin, n_segments=len(flags),
+                       abnormal_fraction=float(flags.mean()), any_abnormal=int(flags.any()),
+                       longest_abnormal_run=longest, continuity_status=continuity,
+                       image_path=catalog["images"].get(rid, {}).get("path", ""))
+            rec.update({"emr_" + k: numeric(v) for k, v in emr.items() if k != "ID"})
+            rec.update({"label_" + k: numeric(v) for k, v in label.items() if k not in {"ID", "Bbox", "Abnormality"}})
+            birth, mbirth = numeric(emr.get("Birth Date")), numeric(emr.get("Mother.Birth Date"))
+            rec["maternal_age"] = birth // 100 - mbirth // 100 + 1
+            rec["gestational_age"] = numeric(emr.get("GA.wks")) + numeric(emr.get("GA.day", 0)) / 7
+            for field in emr:
+                emr_fields[field] += 1
+                emr_missing[field] += int(not np.isfinite(numeric(emr[field])))
+            for part in annotation.get("data", []):
+                for key in ("baseline", "baseline_var", "accel", "decel", "cervix"):
+                    if key in part:
+                        placeholders[(key, str(part[key]))] += 1
+            kept, missing_values = 0, []
+            for index, (fhr, toco, target) in enumerate(zip(case.fhr_windows, case.toco_windows, flags)):
+                if not np.isclose(case.dt * len(fhr), 300):
+                    raise ValueError(f"{rid}/{index}: expected 300s window, got {case.dt * len(fhr)}s")
+                if not np.isclose(case.dt, 2) or len(fhr) != 150:
+                    raise ValueError(f"{rid}: this approved CNN contract needs 0.5Hz / 150 samples, got dt={case.dt}, N={len(fhr)}")
+                if (fhr < 0).any():
+                    raise ValueError(f"{rid}: negative FHR")
+                missing = float((fhr == 0).mean())
+                missing_values.append(missing)
+                if missing > cfg["max_missing_fraction"]:
+                    exclusions.append(dict(record_id=rid, seg_idx=index, reason="fhr_missing_gt_threshold", missing_fraction=missing))
+                    continue
+                started = time.perf_counter()
+                clean_f, clean_t = preprocess_for_features(fhr, toco, 1 / case.dt)
+                factors = extract_segment(clean_f, clean_t, 1 / case.dt)
+                extraction_seconds["smooth30"] += time.perf_counter() - started
+                started = time.perf_counter()
+                raw_f, raw_t = preprocess_for_features(fhr, toco, 1 / case.dt, smooth_seconds=0)
+                raw_factors = extract_segment(raw_f, raw_t, 1 / case.dt)
+                extraction_seconds["smooth0"] += time.perf_counter() - started
+                if not np.isfinite(list(factors.values())).all():
+                    raise ValueError(f"Nonfinite Cat28: {rid}/{index}")
+                if not np.isfinite(list(raw_factors.values())).all():
+                    raise ValueError(f"Nonfinite unsmoothed Cat28: {rid}/{index}")
+                unsmoothed.append(dict(record_id=rid, seg_idx=index, **raw_factors))
+                segments.append(dict(record_id=rid, mother_id=mid, site=case.site, seg_idx=index, target=int(target),
+                                     missing_fraction=missing, record_all_normal=int(not flags.any()), **factors))
+                signal = interpolate_signal(fhr, toco)
+                if not np.isfinite(signal).all():
+                    raise ValueError(f"Nonfinite CNN signal: {rid}/{index}")
+                signals.append(signal)
+                kept += 1
+            rec.update(n_kept=kept, missing_fraction=float(np.mean(missing_values)))
+            records.append(rec)
+            if emr:
+                for mode, destination in (("original", original), ("corrected", corrected)):
+                    with issues.guard(f"official_input:{mode}:{rid}"):
+                        destination.append(official_row(rid, emr, label, annotation, case, mode))
+            if number % 250 == 0:
+                note(f"인자 추출 {number:,}/{len(annotations):,} records; {len(segments):,} segments")
     if not signals:
-        raise ValueError("No usable signal segments")
-    pd.DataFrame(records).to_csv(out / "records.csv", index=False)
-    segment_frame = pd.DataFrame(segments)
-    raw_frame = pd.DataFrame(unsmoothed)
+        issues.record("usable_signals", Unavailable("No usable signal segments; descriptive outputs only"))
+    excluded_records = [row for row in issues.rows if row["job"].startswith("record:")]
+    pd.DataFrame([dict(record_id=row["job"][7:], type=row["type"], reason=row["error"]) for row in excluded_records],
+                 columns=["record_id", "type", "reason"]).to_csv(out / "record_exclusions.csv", index=False)
+    record_frame = (pd.DataFrame(records) if records else pd.DataFrame(columns=[
+        "record_id", "mother_id", "site", "n_segments", "n_kept", "any_abnormal",
+        "is_twin", "abnormal_fraction", "longest_abnormal_run", "continuity_status",
+        "missing_fraction", "maternal_age", "gestational_age"]))
+    record_frame.to_csv(out / "records.csv", index=False)
+    segment_frame = pd.DataFrame(segments, columns=[
+        "record_id", "mother_id", "site", "seg_idx", "target", "missing_fraction", "record_all_normal"] + CAT28)
+    raw_frame = pd.DataFrame(unsmoothed, columns=["record_id", "seg_idx"] + CAT28)
     segment_frame.to_csv(out / "segments.csv", index=False)
     raw_frame.to_csv(out / "segments_unsmoothed.csv", index=False)
     feature_quality(segment_frame).to_csv(out / "feature_quality.csv", index=False)
     pd.DataFrame([dict(feature=f, mean_abs_change=float(np.abs(segment_frame[f] - raw_frame[f]).mean()),
         zero_fraction_smooth30=float(segment_frame[f].eq(0).mean()), zero_fraction_smooth0=float(raw_frame[f].eq(0).mean()))
         for f in CAT28]).to_csv(out / "preprocessing_sensitivity.csv", index=False)
-    np.save(out / "signals.npy", np.stack(signals))
+    np.save(out / "signals.npy", np.stack(signals) if signals else np.empty((0, 2, 150), dtype=np.float32))
     pd.DataFrame(exclusions, columns=["record_id", "seg_idx", "reason", "missing_fraction"]).to_csv(out / "exclusions.csv", index=False)
     pd.DataFrame(original, columns=["record_id", "target"] + OFFICIAL_COLUMNS).to_csv(out / "official_original.csv", index=False)
     pd.DataFrame(corrected, columns=["record_id", "target"] + OFFICIAL_COLUMNS).to_csv(out / "official_corrected.csv", index=False)
     pd.DataFrame([dict(field=k, value=v, count=n) for (k, v), n in placeholders.items()]).to_csv(out / "annotation_fields.csv", index=False)
     pd.DataFrame([dict(field=k, present=emr_fields[k], missing=emr_missing[k], missing_or_absent=len(records) - emr_fields[k] + emr_missing[k])
                   for k in sorted(emr_fields)]).to_csv(out / "emr_missingness.csv", index=False)
-    pd.DataFrame(records).groupby("site").agg(records=("record_id", "size"), mothers=("mother_id", "nunique"),
+    record_frame.groupby("site").agg(records=("record_id", "size"), mothers=("mother_id", "nunique"),
         positive_records=("any_abnormal", "sum"), twins=("is_twin", "sum")).to_csv(out / "site_inventory.csv")
     summary = dict(records=len(records), mothers=len({r["mother_id"] for r in records}), segments=len(segments),
                    positive_segments=sum(s["target"] for s in segments), excluded_segments=len(exclusions),
@@ -265,8 +296,12 @@ def prepare(catalog, out, cfg):
                    bbox_unverified=sum(not r["checked"] and r["n_abnormal"] > 0 for r in bbox),
                    channel_contract=["FHR", "TOCO"], sample_interval_seconds=2,
                    feature_extraction_seconds=extraction_seconds,
-                   feature_extraction_ms_per_segment={k: v * 1000 / len(segments) for k, v in extraction_seconds.items()},
+                   feature_extraction_ms_per_segment={k: v * 1000 / len(segments) if segments else None for k, v in extraction_seconds.items()},
                    continuity_unknown_records=sum(r["continuity_status"] != "source_index_proxy" for r in records),
                    features=CAT28)
+    summary.update(input_records=len(annotations), excluded_records=len(excluded_records),
+                   status="complete_with_issues" if issues.rows or not signals else "complete",
+                   usable_for_training=bool(signals), exclusion_policy="whole_invalid_record_no_label_repair")
     write_json(out / "summary.json", summary)
+    write_json(out / "status.json", issues.finish(usable_for_training=bool(signals)))
     note(f"데이터 준비 완료: {len(records):,} records / {len(segments):,} segments")

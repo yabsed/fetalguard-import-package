@@ -10,6 +10,7 @@ from .data import EMR_FEATURES
 from .features import CAT28
 from .evaluation import group_folds, threshold90, evaluate, paired
 from .models import with_metadata, fit_tree, predict
+from .resilience import Issues, Unavailable
 
 
 def calibration_bins(y, p, bins=10):
@@ -68,7 +69,8 @@ def outcome_association(valid, column):
                                                 if valid.target.nunique() == 2 else None))
 
 
-def outcomes(run, out, cfg):
+def outcomes(run, out, cfg, issues=None):
+    issues = issues if issues is not None else Issues(out)
     records = table(run / "data/records.csv")
     for c in EMR_FEATURES:
         if c not in records:
@@ -114,17 +116,16 @@ def outcomes(run, out, cfg):
                     row = valid.iloc[te][["record_id", "mother_id", "target"]].assign(outcome=name, arm=arm, fold=fold, score=p, threshold=threshold)
                     pair_rows.append(row)
             pred = pd.concat(pair_rows, ignore_index=True)
-            predictions.append(pred)
             left, right = [pred[pred.arm == a] for a in ("clinical_plus_reading", "clinical")]
             join = left.merge(right[["record_id", "score"]], on="record_id", suffixes=("", "_baseline"), validate="one_to_one")
             summaries[name] = dict(description, status="ok",
                 metrics={a: evaluate(sub, sub.score, sub.threshold, cfg["budget"]["bootstrap"], cfg["seed"])
                          for a, sub in pred.groupby("arm")},
                 paired_increment=paired(join, join.score, join.score_baseline, cfg["budget"]["bootstrap"], cfg["seed"]))
-        except ValueError as exc:
-            if "두 클래스" not in str(exc):
-                raise
-            summaries[name] = dict(description, status="insufficient_classes_in_grouped_fold", reason=str(exc))
+            predictions.append(pred)
+        except Exception as exc:
+            issues.record("outcome:" + name, exc)
+            summaries[name] = dict(description, status="unavailable", reason=str(exc))
     if predictions:
         pd.concat(predictions, ignore_index=True).to_csv(out / "outcome_oof_predictions.csv", index=False)
     write_json(out / "outcomes.json", summaries)
@@ -162,42 +163,44 @@ def annotations(run, out):
     write_json(out / "annotation_scope.json", {"unit": "record", "note": "Record labels are compared to mean/sum of selected fetus windows. No claim of segment-level gold standard or inter-rater reliability. annotation_person placeholder distributions are in data/annotation_fields.csv."})
 
 
-def sites(run, out, cfg):
+def sites(run, out, cfg, issues=None):
+    issues = issues if issues is not None else Issues(out)
     frame = with_metadata(run)
     results, predictions, bins = {}, [], []
     for site in sorted(frame.site.unique()):
-        hold = frame[frame.site == site].copy()
-        # Exclude the held site's mothers everywhere, including cross-site repeats.
-        development = frame[~frame.mother_id.isin(hold.mother_id)].reset_index(drop=True)
-        if hold.target.nunique() < 2 or development.target.nunique() < 2 or development.mother_id.nunique() < 8:
-            results[site] = {"status": "insufficient_classes_or_groups"}
-            continue
-        tr, va = next(group_folds(development, 5, cfg["seed"]))
-        train, val = development.iloc[tr], development.iloc[va]
-        if train.target.nunique() < 2 or val.target.nunique() < 2:
-            results[site] = {"status": "insufficient_validation_classes"}
-            continue
-        note(f"LOSO held site={site}: train={len(train):,}, test={len(hold):,}")
-        model = fit_tree(train, val, CAT28, cfg, cfg["seed"], path=out / "models" / f"loso_{site}.cbm")
-        vp, hp = predict(model, val, CAT28), predict(model, hold, CAT28)
-        calibrator = LogisticRegression(random_state=cfg["seed"]).fit(logit(vp), val.target)
-        cp = calibrator.predict_proba(logit(hp))[:, 1]
-        cvp = calibrator.predict_proba(logit(vp))[:, 1]
-        results[site] = {"status": "ok", "held_mothers": int(hold.mother_id.nunique()),
-                         "source_only_calibration": {"coef": calibrator.coef_.tolist(), "intercept": calibrator.intercept_.tolist(),
-                                                     "monotone_increasing": bool(calibrator.coef_[0, 0] > 0)},
-                         "operating_rule": "threshold chosen for at least 90% specificity on source validation only, separately for raw and Platt scores",
-                         "calibration_interpretation": "An increasing Platt map preserves ranking; reselecting the same source-specificity threshold usually preserves alarms. Calibration evaluates probability accuracy, not a solution to site alarm shift.",
-                         "validation_scope": "held source-site code; no claim of independent prospective external validation"}
-        operating_predictions = {}
-        for arm, p, v in (("raw", hp, vp), ("platt", cp, cvp)):
-            threshold = threshold90(val.target, v)
-            operating_predictions[arm] = p >= threshold
-            results[site][arm] = evaluate(hold, p, threshold, cfg["budget"]["bootstrap"], cfg["seed"])
-            results[site][arm]["threshold"] = threshold
-            predictions.append(hold[["record_id", "mother_id", "seg_idx", "target", "record_all_normal"]].assign(site=site, arm=arm, score=p, threshold=threshold))
-            bins.extend([dict(site=site, arm=arm, **row) for row in calibration_bins(hold.target, p)])
-        results[site]["raw_platt_same_operating_predictions"] = bool(np.array_equal(operating_predictions["raw"], operating_predictions["platt"]))
+        with issues.guard("site:" + str(site)):
+            hold = frame[frame.site == site].copy()
+            # Exclude the held site's mothers everywhere, including cross-site repeats.
+            development = frame[~frame.mother_id.isin(hold.mother_id)].reset_index(drop=True)
+            if hold.target.nunique() < 2 or development.target.nunique() < 2 or development.mother_id.nunique() < 8:
+                results[site] = {"status": "insufficient_classes_or_groups"}
+                continue
+            tr, va = next(group_folds(development, 5, cfg["seed"]))
+            train, val = development.iloc[tr], development.iloc[va]
+            if train.target.nunique() < 2 or val.target.nunique() < 2:
+                results[site] = {"status": "insufficient_validation_classes"}
+                continue
+            note(f"LOSO held site={site}: train={len(train):,}, test={len(hold):,}")
+            model = fit_tree(train, val, CAT28, cfg, cfg["seed"], path=out / "models" / f"loso_{site}.cbm")
+            vp, hp = predict(model, val, CAT28), predict(model, hold, CAT28)
+            calibrator = LogisticRegression(random_state=cfg["seed"]).fit(logit(vp), val.target)
+            cp = calibrator.predict_proba(logit(hp))[:, 1]
+            cvp = calibrator.predict_proba(logit(vp))[:, 1]
+            results[site] = {"status": "ok", "held_mothers": int(hold.mother_id.nunique()),
+                             "source_only_calibration": {"coef": calibrator.coef_.tolist(), "intercept": calibrator.intercept_.tolist(),
+                                                         "monotone_increasing": bool(calibrator.coef_[0, 0] > 0)},
+                             "operating_rule": "threshold chosen for at least 90% specificity on source validation only, separately for raw and Platt scores",
+                             "calibration_interpretation": "An increasing Platt map preserves ranking; reselecting the same source-specificity threshold usually preserves alarms. Calibration evaluates probability accuracy, not a solution to site alarm shift.",
+                             "validation_scope": "held source-site code; no claim of independent prospective external validation"}
+            operating_predictions = {}
+            for arm, p, v in (("raw", hp, vp), ("platt", cp, cvp)):
+                threshold = threshold90(val.target, v)
+                operating_predictions[arm] = p >= threshold
+                results[site][arm] = evaluate(hold, p, threshold, cfg["budget"]["bootstrap"], cfg["seed"])
+                results[site][arm]["threshold"] = threshold
+                predictions.append(hold[["record_id", "mother_id", "seg_idx", "target", "record_all_normal"]].assign(site=site, arm=arm, score=p, threshold=threshold))
+                bins.extend([dict(site=site, arm=arm, **row) for row in calibration_bins(hold.target, p)])
+            results[site]["raw_platt_same_operating_predictions"] = bool(np.array_equal(operating_predictions["raw"], operating_predictions["platt"]))
     if predictions:
         pd.concat(predictions, ignore_index=True).to_csv(out / "loso_predictions.csv", index=False)
     pd.DataFrame(bins).to_csv(out / "loso_calibration_bins.csv", index=False)
@@ -215,6 +218,8 @@ def metadata(run, out, cfg):
         for seed in opts["seeds"]:
             path = (run / "experiment_a/models" / f"holdout_cat28_{seed}.cbm" if arm == "cat28"
                     else out / "models" / f"emr_added_{seed}.cbm")
+            if arm == "cat28" and not path.exists():
+                path = out / "models" / f"holdout_cat28_{seed}.cbm"
             model = fit_tree(train, val, columns, cfg, seed, path=path)
             vp, tp = predict(model, val, columns), predict(model, test, columns)
             validation_ap = float(average_precision_score(val.target, vp))
@@ -273,7 +278,13 @@ def metadata(run, out, cfg):
 
 def run_supplementary(run, out, cfg):
     out.mkdir(parents=True, exist_ok=True)
-    annotations(run, out)
-    outcomes(run, out, cfg)
-    sites(run, out, cfg)
-    metadata(run, out, cfg)
+    issues = Issues(out)
+    for name, action in (
+        ("annotations", lambda: annotations(run, out)),
+        ("outcomes", lambda: outcomes(run, out, cfg, issues)),
+        ("sites", lambda: sites(run, out, cfg, issues)),
+        ("metadata", lambda: metadata(run, out, cfg)),
+    ):
+        with issues.guard(name):
+            action()
+    write_json(out / "status.json", issues.finish())

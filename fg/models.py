@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 import numpy as np
 import pandas as pd
-from catboost import CatBoostClassifier, Pool
 from joblib import dump, load
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.impute import SimpleImputer
@@ -11,13 +10,13 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler, SplineTransformer
 from sklearn.metrics import average_precision_score, roc_auc_score
-from xgboost import XGBClassifier
 
 from .common import note, table, write_json, require_two_classes
 from .features import CAT18, CAT28, GROUPS, ROBUST
 from .evaluation import group_folds, load_segments, threshold90, evaluate, paired
 from .telemetry import emit
 from .survey import write_csv
+from .resilience import Issues, Unavailable
 
 
 def logistic():
@@ -122,10 +121,12 @@ def fit_tree(train, val, columns, cfg, seed, kind="cat", path=None):
     require_two_classes(val.target, "validation")
     opts = cfg["budget"]
     if kind == "cat":
+        from catboost import CatBoostClassifier
         model = CatBoostClassifier(iterations=opts["tree_iterations"], depth=6, learning_rate=0.05,
             loss_function="Logloss", eval_metric="PRAUC", random_seed=seed, auto_class_weights="SqrtBalanced",
             thread_count=cfg["threads"], allow_writing_files=False, verbose=False)
     else:
+        from xgboost import XGBClassifier
         pos = int(train.target.sum())
         model = XGBClassifier(n_estimators=opts["tree_iterations"], max_depth=4, learning_rate=0.05,
             objective="binary:logistic", eval_metric="aucpr", tree_method="hist", n_jobs=cfg["threads"],
@@ -211,6 +212,7 @@ def with_metadata(run):
 
 
 def run_a(run, out, cfg):
+    issues = Issues(out)
     frame = load_segments(run)
     dev = frame[frame.split != "test"].reset_index(drop=True)
     train, val, test = [frame[frame.split == s].reset_index(drop=True) for s in ("train", "val", "test")]
@@ -224,8 +226,9 @@ def run_a(run, out, cfg):
     frames = {"primary": frame}
     sensitivity_path = run / "data/segments_unsmoothed.csv"
     if sensitivity_path.exists():
-        frames["unsmoothed"] = align_unsmoothed(frame, table(sensitivity_path))
-        variants["cat28_unsmoothed"] = ("cat", CAT28, "unsmoothed")
+        with issues.guard("unsmoothed_alignment"):
+            frames["unsmoothed"] = align_unsmoothed(frame, table(sensitivity_path))
+            variants["cat28_unsmoothed"] = ("cat", CAT28, "unsmoothed")
     write_json(out / "preprocessing_sensitivity.json", dict(
         status="ok" if "unsmoothed" in frames else "unavailable",
         comparison="cat28_minus_cat28_unsmoothed", same_cohort=True,
@@ -234,123 +237,157 @@ def run_a(run, out, cfg):
     dev_frames = {name: value[value.split != "test"].reset_index(drop=True) for name, value in frames.items()}
     holdout_frames = {name: tuple(value[value.split == split].reset_index(drop=True)
                                  for split in ("train", "val", "test")) for name, value in frames.items()}
-    feature_response(train).to_csv(out / "feature_response_train.csv", index=False)
+    with issues.guard("feature_response"):
+        feature_response(train).to_csv(out / "feature_response_train.csv", index=False)
     univariate_families = {"linear": ("single_", logistic), "nonlinear_spline": ("nonlinear_single_", nonlinear_logistic)}
     extensions = {"cat": ".cbm", "xgb": ".json", "logistic": ".joblib"}
     all_cv_names = list(variants) + [prefix + c for prefix, _ in univariate_families.values() for c in CAT28]
     cv_metrics, cv_summary = [], []
     for seed in opts["seeds"]:
-        oof = dev[["record_id", "mother_id", "seg_idx", "target", "record_all_normal"]].copy()
-        prediction_columns = [prefix + name for name in all_cv_names for prefix in ("score__", "threshold__")]
-        oof = pd.concat([oof, pd.DataFrame(np.nan, index=oof.index, columns=prediction_columns + ["fold"])], axis=1)
-        for fold, (tr, te) in enumerate(group_folds(dev, opts["cv_folds"], seed)):
-            pool = dev.iloc[tr].reset_index(drop=True)
-            it, iv = next(group_folds(pool, 4, seed + fold))
-            fitting, tuning, hold = pool.iloc[it], pool.iloc[iv], dev.iloc[te]
-            for name, (kind, columns, source) in variants.items():
-                note(f"A CV seed={seed} fold={fold + 1}/{opts['cv_folds']} {name}")
-                view = dev_frames[source]
-                fit_view, tune_view, hold_view = view.iloc[tr[it]], view.iloc[tr[iv]], view.iloc[te]
-                path = out / "models" / f"cv_{seed}_{fold}_{name}{extensions[kind]}"
-                model = fit_variant(fit_view, tune_view, columns, cfg, seed, kind, path)
-                scores = predict(model, hold_view, columns)
-                threshold = threshold90(tune_view.target, predict(model, tune_view, columns))
-                oof.loc[te, "score__" + name] = scores
-                oof.loc[te, "threshold__" + name] = threshold
-                oof.loc[te, "fold"] = fold
-                cv_metrics.append(dict(seed=seed, fold=fold, model=name, **evaluate(hold, scores, threshold)["point"]))
-            # H2: preprocessing is fitted only inside the training fold.
-            for prefix, factory in univariate_families.values():
-                for feature in CAT28:
-                    model = factory().fit(fitting[[feature]], fitting.target)
-                    scores = predict(model, hold, [feature])
-                    threshold = threshold90(tuning.target, predict(model, tuning, [feature]))
-                    oof.loc[te, "score__" + prefix + feature] = scores
-                    oof.loc[te, "threshold__" + prefix + feature] = threshold
-        if oof.isna().any().any():
-            raise ValueError("OOF coverage is incomplete")
-        oof.to_csv(out / f"cv_predictions_seed{seed}.csv", index=False)
-        for name in all_cv_names:
-            result = evaluate(oof, oof["score__" + name], oof["threshold__" + name].to_numpy(), opts["bootstrap"], seed)
-            cv_summary.append(dict(seed=int(seed), model=name, result=result))
+        with issues.guard(f"cv_seed:{seed}"):
+            oof = dev[["record_id", "mother_id", "seg_idx", "target", "record_all_normal"]].copy()
+            prediction_columns = [prefix + name for name in all_cv_names for prefix in ("score__", "threshold__")]
+            oof = pd.concat([oof, pd.DataFrame(np.nan, index=oof.index, columns=prediction_columns + ["fold"])], axis=1)
+            for fold, (tr, te) in enumerate(group_folds(dev, opts["cv_folds"], seed)):
+                with issues.guard(f"cv_fold:{seed}:{fold}"):
+                    pool = dev.iloc[tr].reset_index(drop=True)
+                    it, iv = next(group_folds(pool, 4, seed + fold))
+                    fitting, tuning, hold = pool.iloc[it], pool.iloc[iv], dev.iloc[te]
+                    oof.loc[te, "fold"] = fold
+                    for name, (kind, columns, source) in variants.items():
+                        with issues.guard(f"cv:{seed}:{fold}:{name}"):
+                            note(f"A CV seed={seed} fold={fold + 1}/{opts['cv_folds']} {name}")
+                            view = dev_frames[source]
+                            fit_view, tune_view, hold_view = view.iloc[tr[it]], view.iloc[tr[iv]], view.iloc[te]
+                            path = out / "models" / f"cv_{seed}_{fold}_{name}{extensions[kind]}"
+                            model = fit_variant(fit_view, tune_view, columns, cfg, seed, kind, path)
+                            scores = predict(model, hold_view, columns)
+                            threshold = threshold90(tune_view.target, predict(model, tune_view, columns))
+                            oof.loc[te, "score__" + name] = scores
+                            oof.loc[te, "threshold__" + name] = threshold
+                            oof.loc[te, "fold"] = fold
+                            cv_metrics.append(dict(seed=seed, fold=fold, model=name, **evaluate(hold, scores, threshold)["point"]))
+                    # H2: preprocessing is fitted only inside the training fold.
+                    for prefix, factory in univariate_families.values():
+                        for feature in CAT28:
+                            with issues.guard(f"cv:{seed}:{fold}:{prefix}{feature}"):
+                                model = factory().fit(fitting[[feature]], fitting.target)
+                                scores = predict(model, hold, [feature])
+                                threshold = threshold90(tuning.target, predict(model, tuning, [feature]))
+                                oof.loc[te, "score__" + prefix + feature] = scores
+                                oof.loc[te, "threshold__" + prefix + feature] = threshold
+            # Preserve incomplete predictions privately, but never score a reduced OOF cohort.
+            oof.to_csv(out / f"cv_partial_seed{seed}.csv", index=False)
+            complete_names = []
+            for name in all_cv_names:
+                with issues.guard(f"cv_summary:{seed}:{name}"):
+                    if oof[["score__" + name, "threshold__" + name]].isna().any().any():
+                        raise Unavailable("OOF coverage is incomplete; no reduced-cohort metric")
+                    result = evaluate(oof, oof["score__" + name], oof["threshold__" + name].to_numpy(), opts["bootstrap"], seed)
+                    cv_summary.append(dict(seed=int(seed), model=name, result=result))
+                    complete_names.append(name)
+            if complete_names:
+                columns = ["record_id", "mother_id", "seg_idx", "target", "record_all_normal", "fold"]
+                columns += [prefix + name for name in complete_names for prefix in ("score__", "threshold__")]
+                oof[columns].to_csv(out / f"cv_predictions_seed{seed}.csv", index=False)
     pd.DataFrame(cv_metrics).to_csv(out / "cv_fold_metrics.csv", index=False)
     write_json(out / "cv_summary.json", cv_summary)
-    pd.DataFrame([dict(seed=r["seed"], model=r["model"], **r["result"]["point"]) for r in cv_summary]).to_csv(out / "cv_summary.csv", index=False)
+    pd.DataFrame([dict(seed=r["seed"], model=r["model"], **r["result"].get("point", {})) for r in cv_summary]).to_csv(out / "cv_summary.csv", index=False)
     holdout_results, prediction_rows, selection, seed_metrics = {}, [], [], []
     chosen, seed_predictions = {}, {}
     for name, (kind, columns, source) in variants.items():
-        train_view, val_view, test_view = holdout_frames[source]
-        candidates = []
-        for seed in opts["seeds"]:
-            path = out / "models" / f"holdout_{name}_{seed}{extensions[kind]}"
-            model = fit_variant(train_view, val_view, columns, cfg, seed, kind, path)
-            score = float(average_precision_score(val_view.target, predict(model, val_view, columns)))
-            candidates.append((score, seed, model, path))
-            selection.append(dict(model=name, seed=seed, validation_auprc=score))
-        _, seed, model, path = max(candidates, key=lambda item: item[0])
-        # Selection is finished before any test predictions are inspected.
-        vp = predict(model, val_view, columns)
-        tp, timing = timed_predict(model, test_view, columns)
-        threshold = threshold90(val.target, vp)
-        holdout_results[name] = evaluate(test, tp, threshold, opts["bootstrap"], cfg["seed"])
-        holdout_results[name].update(threshold=threshold, selected_seed=seed, model_file=str(path.relative_to(run)),
-                                    features=columns, selection="validation_AP", inference_timing=timing,
-                                    model_bytes=path.stat().st_size, feature_source=source)
-        chosen[name] = (model, tp, vp, columns)
-        prediction_rows.append(test[["record_id", "mother_id", "seg_idx", "target", "site", "record_all_normal"]].assign(model=name, score=tp, threshold=threshold))
-        for score, candidate_seed, candidate, _ in candidates:
-            cp = tp if candidate_seed == seed else predict(candidate, test_view, columns)
-            ct = threshold90(val.target, predict(candidate, val_view, columns))
-            seed_predictions[(name, candidate_seed)] = cp
-            point = evaluate(test, cp, ct)["point"]
-            seed_metrics.append(dict(seed=candidate_seed, model=name, validation_auprc=score,
-                                     selected=candidate_seed == seed, **point))
+        with issues.guard(f"holdout:{name}"):
+            train_view, val_view, test_view = holdout_frames[source]
+            candidates = []
+            for seed in opts["seeds"]:
+                with issues.guard(f"holdout_fit:{name}:{seed}"):
+                    path = out / "models" / f"holdout_{name}_{seed}{extensions[kind]}"
+                    model = fit_variant(train_view, val_view, columns, cfg, seed, kind, path)
+                    score = float(average_precision_score(val_view.target, predict(model, val_view, columns)))
+                    candidates.append((score, seed, model, path))
+                    selection.append(dict(model=name, seed=seed, validation_auprc=score))
+            if len(candidates) != len(opts["seeds"]):
+                raise Unavailable("Incomplete seed search; this model selection is unavailable")
+            _, seed, model, path = max(candidates, key=lambda item: item[0])
+            # Selection is finished before any test predictions are inspected.
+            vp = predict(model, val_view, columns)
+            tp, timing = timed_predict(model, test_view, columns)
+            threshold = threshold90(val.target, vp)
+            result = evaluate(test, tp, threshold, opts["bootstrap"], cfg["seed"])
+            result.update(threshold=threshold, selected_seed=seed, model_file=str(path.relative_to(run)),
+                                        features=columns, selection="validation_AP", inference_timing=timing,
+                                        model_bytes=path.stat().st_size, feature_source=source)
+            holdout_results[name] = result
+            chosen[name] = (model, tp, vp, columns)
+            prediction_rows.append(test[["record_id", "mother_id", "seg_idx", "target", "site", "record_all_normal"]].assign(model=name, score=tp, threshold=threshold))
+            for score, candidate_seed, candidate, _ in candidates:
+                with issues.guard(f"holdout_seed_metric:{name}:{candidate_seed}"):
+                    cp = tp if candidate_seed == seed else predict(candidate, test_view, columns)
+                    ct = threshold90(val.target, predict(candidate, val_view, columns))
+                    seed_predictions[(name, candidate_seed)] = cp
+                    point = evaluate(test, cp, ct)["point"]
+                    seed_metrics.append(dict(seed=candidate_seed, model=name, validation_auprc=score,
+                                             selected=candidate_seed == seed, **point))
     single_rows = []
     for family, (_, factory) in univariate_families.items():
-        singles = []
-        for feature in CAT28:
-            model = factory().fit(train[[feature]], train.target)
-            vp = predict(model, val, [feature])
-            score = float(roc_auc_score(val.target, vp))
-            singles.append((score, feature, model, vp))
-            single_rows.append(dict(family=family, feature=feature, validation_auroc=score))
-        _, feature, single, vp = max(singles, key=lambda item: item[0])
-        name = "best_single" if family == "linear" else "best_single_nonlinear"
-        sp, timing = timed_predict(single, test, [feature])
-        st = threshold90(val.target, vp)
-        holdout_results[name] = evaluate(test, sp, st, opts["bootstrap"], cfg["seed"])
-        path = out / "models" / (name + ".joblib")
-        dump(single, path)
-        holdout_results[name].update(feature=feature, family=family, threshold=st, selection="validation_AUROC",
-                                    inference_timing=timing, model_file=str(path.relative_to(run)), model_bytes=path.stat().st_size)
-        chosen[name] = (single, sp, vp, [feature])
-        prediction_rows.append(test[["record_id", "mother_id", "seg_idx", "target", "site", "record_all_normal"]].assign(model=name, score=sp, threshold=st))
+        with issues.guard(f"single_selection:{family}"):
+            singles = []
+            for feature in CAT28:
+                with issues.guard(f"single_fit:{family}:{feature}"):
+                    model = factory().fit(train[[feature]], train.target)
+                    vp = predict(model, val, [feature])
+                    score = float(roc_auc_score(val.target, vp))
+                    singles.append((score, feature, model, vp))
+                    single_rows.append(dict(family=family, feature=feature, validation_auroc=score))
+            if len(singles) != len(CAT28):
+                raise Unavailable("Incomplete single-feature search; best-single selection unavailable")
+            _, feature, single, vp = max(singles, key=lambda item: item[0])
+            name = "best_single" if family == "linear" else "best_single_nonlinear"
+            sp, timing = timed_predict(single, test, [feature])
+            st = threshold90(val.target, vp)
+            result = evaluate(test, sp, st, opts["bootstrap"], cfg["seed"])
+            path = out / "models" / (name + ".joblib")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            dump(single, path)
+            result.update(feature=feature, family=family, threshold=st, selection="validation_AUROC",
+                                        inference_timing=timing, model_file=str(path.relative_to(run)), model_bytes=path.stat().st_size)
+            holdout_results[name] = result
+            chosen[name] = (single, sp, vp, [feature])
+            prediction_rows.append(test[["record_id", "mother_id", "seg_idx", "target", "site", "record_all_normal"]].assign(model=name, score=sp, threshold=st))
     pd.DataFrame(single_rows).to_csv(out / "single_feature_selection.csv", index=False)
     pd.DataFrame(seed_metrics).to_csv(out / "seed_holdout_metrics.csv", index=False)
     seed_deltas = []
     for seed in opts["seeds"]:
         for name in variants:
-            if name != "cat28":
-                delta = paired(test, seed_predictions[("cat28", seed)], seed_predictions[(name, seed)], 0, cfg["seed"])
-                seed_deltas.append(dict(seed=seed, comparator=name,
-                    **{k + "_difference": v["difference"] for k, v in delta["metrics"].items()}))
+            if name != "cat28" and ("cat28", seed) in seed_predictions and (name, seed) in seed_predictions:
+                with issues.guard(f"seed_contrast:{seed}:{name}"):
+                    delta = paired(test, seed_predictions[("cat28", seed)], seed_predictions[(name, seed)], 0, cfg["seed"])
+                    seed_deltas.append(dict(seed=seed, comparator=name,
+                        **{k + "_difference": v["difference"] for k, v in delta["metrics"].items()}))
     pd.DataFrame(seed_deltas).to_csv(out / "seed_paired_cat28_minus_comparator.csv", index=False)
-    pd.concat(prediction_rows, ignore_index=True).to_csv(out / "test_predictions.csv", index=False)
+    if prediction_rows:
+        pd.concat(prediction_rows, ignore_index=True).to_csv(out / "test_predictions.csv", index=False)
     pd.DataFrame(selection).to_csv(out / "validation_selection.csv", index=False)
     write_json(out / "holdout_metrics.json", holdout_results)
-    comparisons = {name: paired(test, chosen["cat28"][1], values[1], opts["bootstrap"], cfg["seed"])
-                   for name, values in chosen.items() if name != "cat28"}
-    write_json(out / "paired_cat28_minus_comparator.json", comparisons)
-    model = chosen["cat28"][0]
-    importance = pd.DataFrame({"feature": CAT28, "prediction_values_change": model.feature_importances_})
-    sample = test.sample(n=min(len(test), opts["shap_samples"]), random_state=cfg["seed"])
-    shap = model.get_feature_importance(Pool(sample[CAT28], sample.target), type="ShapValues", thread_count=cfg["threads"])
-    importance["mean_abs_shap"] = np.abs(shap[:, :-1]).mean(axis=0)
-    importance.sort_values("mean_abs_shap", ascending=False).to_csv(out / "feature_importance.csv", index=False)
-    explanation = sample[["record_id", "seg_idx", "target"]].reset_index(drop=True)
-    explanation["expected_logit"] = shap[:, -1]
-    for i, c in enumerate(CAT28):
-        explanation["value_" + c] = sample[c].to_numpy()
-        explanation["shap_" + c] = shap[:, i]
-    explanation.to_csv(out / "local_explanations.csv", index=False)
-    note("실험 A 완료: 동일 분할 CV·Cat18·선형/비선형 단일 인자·평활 민감도·seed 안정성·SHAP 저장")
+    with issues.guard("paired_holdout"):
+        comparisons = {name: paired(test, chosen["cat28"][1], values[1], opts["bootstrap"], cfg["seed"])
+                       for name, values in chosen.items() if name != "cat28" and "cat28" in chosen}
+        write_json(out / "paired_cat28_minus_comparator.json", comparisons)
+    with issues.guard("shap"):
+        from catboost import Pool
+        if "cat28" not in chosen:
+            raise Unavailable("Cat28 unavailable; no SHAP attribution")
+        model = chosen["cat28"][0]
+        importance = pd.DataFrame({"feature": CAT28, "prediction_values_change": model.feature_importances_})
+        sample = test.sample(n=min(len(test), opts["shap_samples"]), random_state=cfg["seed"])
+        shap = model.get_feature_importance(Pool(sample[CAT28], sample.target), type="ShapValues", thread_count=cfg["threads"])
+        importance["mean_abs_shap"] = np.abs(shap[:, :-1]).mean(axis=0)
+        importance.sort_values("mean_abs_shap", ascending=False).to_csv(out / "feature_importance.csv", index=False)
+        explanation = sample[["record_id", "seg_idx", "target"]].reset_index(drop=True)
+        explanation["expected_logit"] = shap[:, -1]
+        for i, c in enumerate(CAT28):
+            explanation["value_" + c] = sample[c].to_numpy()
+            explanation["shap_" + c] = shap[:, i]
+        explanation.to_csv(out / "local_explanations.csv", index=False)
+    issues.finish()
+    note("실험 A 종료: 성공한 결과만 저장했습니다. 미산출은 issues.jsonl 확인")

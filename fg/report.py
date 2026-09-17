@@ -10,12 +10,31 @@ import pandas as pd
 from sklearn.metrics import roc_curve, precision_recall_curve
 
 from .common import read_json, table, write_json
-from .supplementary import calibration_bins
+from .evaluation import calibration_bins
 from .export_review import collect_tables
 from .case_review import run_case_review
+from .resilience import Issues, partial_report
 
 
 def run_report(run, out, cfg):
+    issues = Issues(out)
+    with issues.guard("detailed_report"):
+        _run_report(run, out, cfg)
+    if issues.rows:
+        partial_report(run, out, cfg)
+        # Preserve all available fixed-schema tables even when a legacy figure
+        # needs a missing model. Exceptions/identifiers remain internal.
+        with issues.guard("partial_tables"):
+            evidence = collect_tables(run, cfg, screened=False)
+            with (out / "report.html").open("a", encoding="utf-8") as stream:
+                for name, frame in evidence.items():
+                    frame.to_csv(out / (name + ".csv"), index=False)
+                    stream.write("<h2>" + html.escape(name) + "</h2>")
+                    stream.write(frame.to_html(index=False, na_rep="미산출") if len(frame.columns) else "<p>미산출</p>")
+    issues.finish()
+
+
+def _run_report(run, out, cfg):
     out.mkdir(parents=True, exist_ok=True)
     case_review_path = run_case_review(run, out)
     figures = out / "figures"
@@ -135,7 +154,9 @@ def run_report(run, out, cfg):
     outcome_table.to_csv(out / "outcome_summary.csv", index=False)
     annotation_table = table(run / "supplementary/figo_annotation_agreement.csv")
     emr_result = read_json(run / "supplementary/emr_added.json")
-    coverage_rows = [dict(section="A: H1/H2/H3", status="complete"), dict(section="B: H4", status=bstatus["status"])]
+    a_status_file = run / "experiment_a/issues_summary.json"
+    a_status = read_json(a_status_file).get("status") if a_status_file.exists() else "complete"
+    coverage_rows = [dict(section="A: H1/H2/H3", status=a_status), dict(section="B: H4", status=bstatus["status"])]
     coverage_rows.extend(dict(section="H5: " + k, status=v.get("status")) for k, v in coverage.items())
     coverage_rows.extend(dict(section="LOSO: " + k, status=v.get("status")) for k, v in loso.items())
     official_rows = []
@@ -173,6 +194,8 @@ def run_report(run, out, cfg):
     ]
     if bstatus.get("hit_cap"):
         notes.append(f"CNN {bstatus['hit_cap']}회가 epoch 상한에 도달했습니다. 수렴 입증으로 해석하지 마세요.")
+    if data.get("excluded_records"):
+        notes.append(f"계약 오류로 기록 {data['excluded_records']}건을 통째로 제외했습니다. data/record_exclusions.csv를 확인하세요. 라벨 절단·추정은 하지 않았습니다.")
     if data["bbox_unverified"]:
         notes.append(f"Bbox 또는 이미지 부재로 양성 기록 {data['bbox_unverified']}건의 좌표 동등성은 확인하지 못했습니다.")
     if data["bbox_failed"]:

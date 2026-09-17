@@ -11,6 +11,7 @@ from .common import note, read_json, table, write_json
 from .data import OFFICIAL_COLUMNS
 from .evaluation import threshold90, evaluate, paired
 from .signal_io import parse_window_abnormality
+from .resilience import Issues, Unavailable
 
 
 def letterbox(path):
@@ -79,78 +80,99 @@ def run_official(package, run, out, cfg, catalog):
     if not cfg["official_models"]:
         write_json(out / "status.json", {"status": "disabled_by_config"})
         return
+    issues = Issues(out)
+    with issues.guard("official_xgb"):
+        _run_xgb(package, run, out, cfg, issues)
+    with issues.guard("official_yolo"):
+        _run_yolo(package, run, out, cfg, catalog, issues)
+    write_json(out / "status.json", issues.finish(models=["AI-Hub XGBoost", "AI-Hub YOLOv5s"]))
+
+
+def run_reference(run, catalog, out, cfg):
+    run_official(Path(__file__).resolve().parents[1], run, out, cfg, catalog)
+
+
+def _run_xgb(package, run, out, cfg, issues):
     booster = xgb.Booster()
     booster.load_model(str(package / "models/official_xgboost/xgb_clf.json"))
     records = table(run / "data/records.csv")
     xgb_metrics, predictions = {}, []
     for mode in ("original", "corrected"):
-        frame = table(run / f"data/official_{mode}.csv")
-        valid = frame[OFFICIAL_COLUMNS + ["target"]].notna().all(axis=1) & frame.target.isin([0, 1])
-        usable = frame.loc[valid].merge(records[["record_id", "mother_id"]], on="record_id", validate="one_to_one")
-        if usable.empty:
-            xgb_metrics[mode] = {"status": "no_complete_records", "excluded": len(frame)}
-            continue
-        p = booster.predict(xgb.DMatrix(usable[OFFICIAL_COLUMNS].to_numpy(np.float32)))
-        xgb_metrics[mode] = evaluate(usable, p, 0.5, cfg["budget"]["bootstrap"], cfg["seed"])
-        xgb_metrics[mode].update(excluded=int((~valid).sum()), task="record-level Emergency", threshold=0.5,
-                                 scope="Replay of distributed weights; training overlap unknown; not Abnormality accuracy")
-        xgb_metrics[mode]["accuracy"] = float(((p >= 0.5) == usable.target.to_numpy()).mean())
-        predictions.append(usable[["record_id", "mother_id", "target"]].assign(parser=mode, score=p))
+        with issues.guard(f"official_xgb:{mode}"):
+            frame = table(run / f"data/official_{mode}.csv")
+            valid = frame[OFFICIAL_COLUMNS + ["target"]].notna().all(axis=1) & frame.target.isin([0, 1])
+            usable = frame.loc[valid].merge(records[["record_id", "mother_id"]], on="record_id", validate="one_to_one")
+            if usable.empty:
+                xgb_metrics[mode] = {"status": "no_complete_records", "excluded": len(frame)}
+                continue
+            p = booster.predict(xgb.DMatrix(usable[OFFICIAL_COLUMNS].to_numpy(np.float32)))
+            xgb_metrics[mode] = evaluate(usable, p, 0.5, cfg["budget"]["bootstrap"], cfg["seed"])
+            xgb_metrics[mode].update(excluded=int((~valid).sum()), task="record-level Emergency", threshold=0.5,
+                                     scope="Replay of distributed weights; training overlap unknown; not Abnormality accuracy")
+            xgb_metrics[mode]["accuracy"] = float(((p >= 0.5) == usable.target.to_numpy()).mean())
+            predictions.append(usable[["record_id", "mother_id", "target"]].assign(parser=mode, score=p))
     write_json(out / "xgboost_emergency_metrics.json", xgb_metrics)
     if predictions:
         pd.concat(predictions).to_csv(out / "xgboost_emergency_predictions.csv", index=False)
+
+
+def _run_yolo(package, run, out, cfg, catalog, issues):
     model = torch.jit.load(str(package / "models/official_yolo/inference.torchscript"), map_location=cfg["resolved_device"]).eval()
     images = [(rid, item) for rid, item in catalog["images"].items() if rid in catalog["labels"]]
     rows = []
+    records = table(run / "data/records.csv")
     by_record = records.set_index("record_id")
     cache = out / "yolo_record_cache"
     cache.mkdir(exist_ok=True)
     for number, (rid, item) in enumerate(images, 1):
-        label = read_json(catalog["labels"][rid]["path"])
-        flags = parse_window_abnormality(label, len(label["Abnormality"].split("_")))
-        cached = cache / f"{rid}.json"
-        if cached.exists():
-            p = np.asarray(read_json(cached)["scores"], float)
-        else:
-            x, ratio, dw, dh, width, height = letterbox(item["path"])
-            with torch.no_grad():
-                raw = model(torch.from_numpy(x).to(cfg["resolved_device"]))[0][0].cpu().numpy()
-            boxes = nms_single_class(raw)
-            if len(boxes):
-                boxes[:, [0, 2]] = np.clip((boxes[:, [0, 2]] - dw) / ratio, 0, width)
-                boxes[:, [1, 3]] = np.clip((boxes[:, [1, 3]] - dh) / ratio, 0, height)
-            p = segment_scores(boxes, width, len(flags))
-            write_json(cached, {"scores": p, "boxes_xyxy_conf": boxes})
-        if len(p) != len(flags):
-            raise ValueError(f"YOLO cache/label mismatch: {rid}")
-        mid = str(by_record.loc[rid, "mother_id"]) if rid in by_record.index else "unmatched_" + rid
-        for index, (target, score) in enumerate(zip(flags, p)):
-            rows.append(dict(record_id=rid, mother_id=mid, seg_idx=index, target=int(target), score=score, record_all_normal=int(not flags.any())))
-        if number % 50 == 0:
-            note(f"공식 YOLO {number}/{len(images)} images")
+        with issues.guard("official_yolo_image:" + rid):
+            label = read_json(catalog["labels"][rid]["path"])
+            flags = parse_window_abnormality(label, len(label["Abnormality"].split("_")))
+            cached = cache / f"{rid}.json"
+            if cached.exists():
+                p = np.asarray(read_json(cached)["scores"], float)
+            else:
+                x, ratio, dw, dh, width, height = letterbox(item["path"])
+                with torch.no_grad():
+                    raw = model(torch.from_numpy(x).to(cfg["resolved_device"]))[0][0].cpu().numpy()
+                boxes = nms_single_class(raw)
+                if len(boxes):
+                    boxes[:, [0, 2]] = np.clip((boxes[:, [0, 2]] - dw) / ratio, 0, width)
+                    boxes[:, [1, 3]] = np.clip((boxes[:, [1, 3]] - dh) / ratio, 0, height)
+                p = segment_scores(boxes, width, len(flags))
+                write_json(cached, {"scores": p, "boxes_xyxy_conf": boxes})
+            if len(p) != len(flags):
+                raise ValueError(f"YOLO cache/label mismatch: {rid}")
+            mid = str(by_record.loc[rid, "mother_id"]) if rid in by_record.index else "unmatched_" + rid
+            for index, (target, score) in enumerate(zip(flags, p)):
+                rows.append(dict(record_id=rid, mother_id=mid, seg_idx=index, target=int(target), score=score, record_all_normal=int(not flags.any())))
+            if number % 50 == 0:
+                note(f"공식 YOLO {number}/{len(images)} images")
     if not rows:
         write_json(out / "yolo_metrics.json", {"status": "no_images", "reason": "refine_images PNG required"})
     else:
         pred = pd.DataFrame(rows)
         pred.to_csv(out / "yolo_predictions.csv", index=False)
         # Only records with known mother IDs enter intervals; labels-only images remain in raw replay.
-        splits = table(run / "splits/segments.csv")
-        matched = pred.merge(splits[["record_id", "seg_idx", "split"]], on=["record_id", "seg_idx"], validate="one_to_one")
-        val, test = matched[matched.split == "val"], matched[matched.split == "test"]
-        info = dict(status="ok", all_images=len(images), matched_segments=len(matched),
+        info = dict(status="predictions_only", all_images=len(images), matched_segments=None,
                     preprocessing="640x640 square letterbox, RGB float/255, conf=0.001, IoU NMS=0.6, max_det=300; center-to-segment max confidence",
                     scope="Image-available subset only; do not impute missing PNG as zero detections. Official training overlap unknown.",
                     unmatched_images=len(set(pred.record_id) - set(records.record_id)))
-        if val.target.nunique() == 2 and test.target.nunique() == 2:
-            threshold = threshold90(val.target, val.score)
-            info.update(threshold=threshold, metrics=evaluate(test, test.score, threshold, cfg["budget"]["bootstrap"], cfg["seed"]))
-            base = table(run / "experiment_a/test_predictions.csv").query("model == 'cat28'")
-            join = test.merge(base[["record_id", "seg_idx", "score", "threshold"]], on=["record_id", "seg_idx"], suffixes=("", "_cat28"), validate="one_to_one")
-            info["cat28_same_image_subset"] = evaluate(join, join.score_cat28, join.threshold, cfg["budget"]["bootstrap"], cfg["seed"])
-            info["paired_cat28_minus_yolo"] = paired(join, join.score_cat28, join.score, cfg["budget"]["bootstrap"], cfg["seed"])
-        else:
-            info["comparison_status"] = "insufficient_image_subset_classes"
+        with issues.guard("official_yolo_evaluation"):
+            splits = table(run / "splits/segments.csv")
+            matched = pred.merge(splits[["record_id", "seg_idx", "split"]], on=["record_id", "seg_idx"], validate="one_to_one")
+            val, test = matched[matched.split == "val"], matched[matched.split == "test"]
+            info["matched_segments"] = len(matched)
+            if val.target.nunique() == 2 and test.target.nunique() == 2:
+                threshold = threshold90(val.target, val.score)
+                info.update(status="ok", threshold=threshold, metrics=evaluate(test, test.score, threshold, cfg["budget"]["bootstrap"], cfg["seed"]))
+                with issues.guard("official_yolo_cat28_comparison"):
+                    base = table(run / "experiment_a/test_predictions.csv").query("model == 'cat28'")
+                    join = test.merge(base[["record_id", "seg_idx", "score", "threshold"]], on=["record_id", "seg_idx"], suffixes=("", "_cat28"), validate="one_to_one")
+                    info["cat28_same_image_subset"] = evaluate(join, join.score_cat28, join.threshold, cfg["budget"]["bootstrap"], cfg["seed"])
+                    info["paired_cat28_minus_yolo"] = paired(join, join.score_cat28, join.score, cfg["budget"]["bootstrap"], cfg["seed"])
+            else:
+                info["comparison_status"] = "insufficient_image_subset_classes"
+
+
         write_json(out / "yolo_metrics.json", info)
-    write_json(out / "status.json", {"status": "complete", "models": ["AI-Hub XGBoost", "AI-Hub YOLOv5s"],
-        "original_parser": "Intentionally reproduces official string-boundary/signed/twin parsing errors for baseline replay only.",
-        "corrected_parser": "Sensitivity analysis on the SAME fixed official weights, not a retrained model."})

@@ -101,6 +101,54 @@ def supplementary_metrics(run, frame):
     return checked
 
 
+def validate_partial(root, run, status, expect_records=None):
+    """Verify only available evidence; PARTIAL_VALIDATED is never full PASS."""
+    stages = status.get("stages", {})
+    verified = []
+    for stage, row in stages.items():
+        if row["status"] not in {"complete", "complete_with_issues"}:
+            continue
+        owner = root if stage in {"export_review", "onsite_figures"} else run
+        target = root / "export_review/onsite_figures" if stage == "onsite_figures" else None
+        stage_hashes(owner, stage, target=target)
+        verified.append(stage)
+    summary, frame, checked = {}, None, 0
+    if "data" in verified:
+        summary = read_json(run / "data/summary.json")
+        if expect_records is not None:
+            assert summary["records"] == expect_records, summary
+        segments = table(run / "data/segments.csv")
+        signals = np.load(run / "data/signals.npy", mmap_mode="r")
+        assert signals.shape == (len(segments), 2, 150)
+        assert np.isfinite(signals).all()
+        assert len(segments) == summary["segments"]
+        if len(segments):
+            assert np.isfinite(segments[CAT28].to_numpy(float)).all()
+            assert not segments.duplicated(["record_id", "seg_idx"]).any()
+    if "splits" in verified:
+        frame = load_segments(run)
+        assert frame.groupby("mother_id").split.nunique().max() == 1
+        expected = frame[frame.split == "test"]
+        for stage, filename in (("experiment_a", "holdout_metrics.json"), ("experiment_b", "metrics.json")):
+            path = run / stage / "test_predictions.csv"
+            if stage not in verified or not path.exists():
+                continue
+            metrics = read_json(run / stage / filename)
+            pred = predictions(path)
+            assert set(pred.model) == set(metrics)
+            for name, rows in pred.groupby("model"):
+                assert_cohort(rows, expected, f"{stage}/{name}")
+                checked += metric_values(rows, metrics[name], f"{stage}/{name}")
+    export = None
+    if "export_review" in verified:
+        from fg.export_review import validate_review_bundle
+        export = validate_review_bundle(root / "export_review")
+    return dict(status="PARTIAL_VALIDATED", full_analysis_complete=False,
+                verified_stages=verified, stages=stages, available_data_summary=summary,
+                sklearn_metric_pairs_verified=checked, export_review=export,
+                note="Only listed stage hashes and available holdout metrics were verified; missing analyses were not passed.")
+
+
 def validate_run(path, expect_records=None, check_original_xgb=False):
     supplied = Path(path).resolve()
     if (supplied / "internal").is_dir():
@@ -110,6 +158,8 @@ def validate_run(path, expect_records=None, check_original_xgb=False):
     else:
         root, run, v2 = supplied, supplied, False
     status = read_json(root / "status.json")
+    if v2 and status["status"] == "complete_with_issues":
+        return validate_partial(root, run, status, expect_records)
     assert status["status"] == "complete", status
     for stage in ("data", "splits", "experiment_a", "experiment_b", "supplementary", "official", "report"):
         stage_hashes(run, stage)

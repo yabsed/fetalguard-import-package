@@ -15,6 +15,7 @@ from .ctgnet import CTGNetMini, count_parameters
 from .evaluation import load_segments, threshold90, evaluate, paired
 from .telemetry import emit
 from .survey import write_csv
+from .resilience import Issues, Unavailable
 
 
 CAPACITY_ARMS = {"small": lambda width: width <= 32, "medium": lambda width: width >= 64}
@@ -52,11 +53,11 @@ def select_capacity(candidates, summary, mode, arm):
                 width_selection=WIDTH_POLICY, seed_selection=SEED_POLICY)
 
 
-def matched_normalization_plan(candidates, summary, seeds):
+def matched_normalization_plan(candidates, summary, seeds, arms=None):
     """Fix width using only the reference normalization's validation search."""
     indexed = {(row["normalization"], row["width"], row["seed"]): row for row in candidates}
     plan = []
-    for arm in CAPACITY_ARMS:
+    for arm in (CAPACITY_ARMS if arms is None else arms):
         chosen = select_capacity(candidates, summary, "channel_maxabs", arm)
         for seed in seeds:
             left = ("channel_maxabs", chosen["width"], seed)
@@ -197,6 +198,7 @@ def train_one(x, frame, width, mode, seed, out, cfg):
 
 def run_b(run, out, cfg):
     out.mkdir(parents=True, exist_ok=True)
+    issues = Issues(out)
     if not cfg["cnn"]:
         write_json(out / "status.json", {"status": "disabled_by_config", "H4": "not_tested"})
         return
@@ -206,23 +208,34 @@ def run_b(run, out, cfg):
     opts = cfg["budget"]
     candidates = []
     for mode in opts["cnn_norms"]:
-        x, norm = normalize(raw, masks["train"], mode)
-        write_json(out / f"normalization_{mode}.json", norm)
-        for width in opts["cnn_widths"]:
-            for seed in opts["seeds"]:
-                job = out / "models" / f"{mode}_w{width}_s{seed}"
-                note(f"B training {job.name}")
-                trained, result = train_one(x, frame, width, mode, seed, job, cfg)
-                candidates.append(dict(**result, job=str(job.relative_to(run))))
-                del trained
+        with issues.guard(f"cnn_normalization:{mode}"):
+            x, norm = normalize(raw, masks["train"], mode)
+            write_json(out / f"normalization_{mode}.json", norm)
+            for width in opts["cnn_widths"]:
+                for seed in opts["seeds"]:
+                    with issues.guard(f"cnn_fit:{mode}:{width}:{seed}"):
+                        job = out / "models" / f"{mode}_w{width}_s{seed}"
+                        note(f"B training {job.name}")
+                        trained, result = train_one(x, frame, width, mode, seed, job, cfg)
+                        candidates.append(dict(**result, job=str(job.relative_to(run))))
+                        del trained
     pd.DataFrame(candidates).to_csv(out / "capacity_validation.csv", index=False)
-    summary = capacity_summary(candidates, opts["seeds"])
+    summary, selections, matched_plan = [], [], []
+    for mode in opts["cnn_norms"]:
+        for arm, eligible in CAPACITY_ARMS.items():
+            with issues.guard(f"cnn_selection:{mode}:{arm}"):
+                widths = [w for w in opts["cnn_widths"] if eligible(w)]
+                subset = [row for row in candidates if row["normalization"] == mode and row["width"] in widths]
+                if not widths or len(subset) != len(widths) * len(opts["seeds"]):
+                    raise Unavailable("Incomplete configured CNN width/seed grid for this arm")
+                arm_summary = capacity_summary(subset, opts["seeds"])
+                summary.extend(arm_summary)
+                selections.append((f"cnn_{arm}_{mode}", select_capacity(subset, arm_summary, mode, arm)))
     pd.DataFrame(summary).to_csv(out / "capacity_summary.csv", index=False)
-    # Width and seed policies are frozen before evaluating any test predictions.
-    selections = [(f"cnn_{arm}_{mode}", select_capacity(candidates, summary, mode, arm))
-                  for mode in opts["cnn_norms"] for arm in CAPACITY_ARMS]
-    matched_plan = (matched_normalization_plan(candidates, summary, opts["seeds"])
-                    if {"channel_maxabs", "per_segment_z"}.issubset(opts["cnn_norms"]) else [])
+    if {"channel_maxabs", "per_segment_z"}.issubset(opts["cnn_norms"]):
+        for arm in CAPACITY_ARMS:
+            with issues.guard(f"cnn_normalization_plan:{arm}"):
+                matched_plan.extend(matched_normalization_plan(candidates, summary, opts["seeds"], arms=[arm]))
     write_json(out / "protocol.json", {
         "width_selection": WIDTH_POLICY, "seed_selection": SEED_POLICY,
         "normalization_contrast": "channel_maxabs minus per_segment_z at the same width and seed",
@@ -266,33 +279,36 @@ def run_b(run, out, cfg):
         return inference_cache[key]
 
     for name, chosen in selections:
-        vp, tp, cost = inference(chosen)
-        threshold = threshold90(val.target, vp)
-        results[name] = evaluate(test, tp, threshold, opts["bootstrap"], cfg["seed"])
-        results[name].update(selection=chosen, threshold=threshold)
-        selected.append(dict(model=name, **chosen))
-        costs.append(dict(model=name, **cost))
-        predictions.append(test[["record_id", "mother_id", "seg_idx", "target", "site", "record_all_normal"]].assign(model=name, score=tp, threshold=threshold))
-    pred = pd.concat(predictions, ignore_index=True)
-    pred.to_csv(out / "test_predictions.csv", index=False)
+        with issues.guard(f"cnn_holdout:{name}"):
+            vp, tp, cost = inference(chosen)
+            threshold = threshold90(val.target, vp)
+            results[name] = evaluate(test, tp, threshold, opts["bootstrap"], cfg["seed"])
+            results[name].update(selection=chosen, threshold=threshold)
+            selected.append(dict(model=name, **chosen))
+            costs.append(dict(model=name, **cost))
+            predictions.append(test[["record_id", "mother_id", "seg_idx", "target", "site", "record_all_normal"]].assign(model=name, score=tp, threshold=threshold))
+    pred = pd.concat(predictions, ignore_index=True) if predictions else pd.DataFrame()
+    if predictions:
+        pred.to_csv(out / "test_predictions.csv", index=False)
     write_json(out / "metrics.json", results)
     write_json(out / "selection.json", selected)
     pd.DataFrame(costs).to_csv(out / "inference_cost.csv", index=False)
     matched, matched_predictions = [], []
     for job in matched_plan:
-        lv, lp, _ = inference(job["left"])
-        rv, rp, _ = inference(job["right"])
-        lt, rt = threshold90(val.target, lv), threshold90(val.target, rv)
-        matched.append(dict(arm=job["arm"], width=job["width"], seed=job["seed"],
-                            reference_width_mean_validation_auprc=job["reference_width_mean_validation_auprc"],
-                            left_normalization="channel_maxabs", right_normalization="per_segment_z",
-                            left_validation_auprc=job["left"]["validation_auprc"],
-                            right_validation_auprc=job["right"]["validation_auprc"],
-                            left_metrics=evaluate(test, lp, lt), right_metrics=evaluate(test, rp, rt),
-                            paired_difference=paired(test, lp, rp, opts["bootstrap"], cfg["seed"])))
-        for mode, prediction, threshold in (("channel_maxabs", lp, lt), ("per_segment_z", rp, rt)):
-            matched_predictions.append(test[["record_id", "mother_id", "seg_idx", "target", "site", "record_all_normal"]]
-                .assign(arm=job["arm"], width=job["width"], seed=job["seed"], normalization=mode, score=prediction, threshold=threshold))
+        with issues.guard(f"cnn_matched:{job['arm']}:{job['seed']}"):
+            lv, lp, _ = inference(job["left"])
+            rv, rp, _ = inference(job["right"])
+            lt, rt = threshold90(val.target, lv), threshold90(val.target, rv)
+            matched.append(dict(arm=job["arm"], width=job["width"], seed=job["seed"],
+                                reference_width_mean_validation_auprc=job["reference_width_mean_validation_auprc"],
+                                left_normalization="channel_maxabs", right_normalization="per_segment_z",
+                                left_validation_auprc=job["left"]["validation_auprc"],
+                                right_validation_auprc=job["right"]["validation_auprc"],
+                                left_metrics=evaluate(test, lp, lt), right_metrics=evaluate(test, rp, rt),
+                                paired_difference=paired(test, lp, rp, opts["bootstrap"], cfg["seed"])))
+            for mode, prediction, threshold in (("channel_maxabs", lp, lt), ("per_segment_z", rp, rt)):
+                matched_predictions.append(test[["record_id", "mother_id", "seg_idx", "target", "site", "record_all_normal"]]
+                    .assign(arm=job["arm"], width=job["width"], seed=job["seed"], normalization=mode, score=prediction, threshold=threshold))
     write_json(out / "normalization_matched.json", {
         "status": "ok" if matched else "requires_both_normalizations",
         "contrast": "channel_maxabs minus per_segment_z",
@@ -301,13 +317,16 @@ def run_b(run, out, cfg):
         "comparisons": matched})
     if matched_predictions:
         pd.concat(matched_predictions, ignore_index=True).to_csv(out / "normalization_matched_predictions.csv", index=False)
-    baseline = table(run / "experiment_a/test_predictions.csv").query("model == 'cat28'")
-    comparisons = {}
-    for name, rows in pred.groupby("model"):
-        match = rows.merge(baseline[["record_id", "seg_idx", "score"]], on=["record_id", "seg_idx"], suffixes=("", "_cat28"), validate="one_to_one")
-        if len(match) != len(test):
-            raise ValueError("CNN and Cat28 have different test cohorts")
-        comparisons[name] = paired(match, match.score_cat28, match.score, opts["bootstrap"], cfg["seed"])
-    write_json(out / "paired_cat28_minus_cnn.json", comparisons)
-    write_json(out / "status.json", {"status": "complete", "runs": len(candidates), "hit_cap": sum(r["hit_cap"] for r in candidates),
+    with issues.guard("cnn_cat28_contrasts"):
+        if pred.empty:
+            raise Unavailable("No selected CNN predictions; comparisons unavailable")
+        baseline = table(run / "experiment_a/test_predictions.csv").query("model == 'cat28'")
+        comparisons = {}
+        for name, rows in pred.groupby("model"):
+            match = rows.merge(baseline[["record_id", "seg_idx", "score"]], on=["record_id", "seg_idx"], suffixes=("", "_cat28"), validate="one_to_one")
+            if len(match) != len(test):
+                raise ValueError("CNN and Cat28 have different test cohorts")
+            comparisons[name] = paired(match, match.score_cat28, match.score, opts["bootstrap"], cfg["seed"])
+        write_json(out / "paired_cat28_minus_cnn.json", comparisons)
+    write_json(out / "status.json", {**issues.finish(), "runs": len(candidates), "hit_cap": sum(r["hit_cap"] for r in candidates),
                                     "note": "Mock training cap is intentional. In full mode inspect hit_cap before claiming convergence."})

@@ -21,7 +21,8 @@ import pandas as pd
 from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
 
 from .common import read_json, sha256, write_json
-from .supplementary import calibration_bins
+from .evaluation import calibration_bins
+from .resilience import Issues
 
 
 BLUE, ORANGE, INK, GRAY = "#247b91", "#d26742", "#223649", "#758493"
@@ -128,13 +129,13 @@ class Guide:
         self.run, self.out, self.cfg, self.korean = run, out, cfg, korean
         self.link_base = Path(link_base) if link_base is not None else out
         self.cards, self.sources = [], {}
-        self.metrics = self.load("experiment_a/holdout_metrics.json")
+        self.metrics = self.load("experiment_a/holdout_metrics.json", optional=True)
         self.metrics.update(self.load("experiment_b/metrics.json", optional=True))
-        self.pairs = self.load("experiment_a/paired_cat28_minus_comparator.json")
-        self.summary = self.load("data/summary.json")
-        self.splits = self.load("splits/summary.json")
-        self.pred = self.load("experiment_a/test_predictions.csv")
-        self.cat = self.pred.loc[self.pred.model.eq("cat28")].copy()
+        self.pairs = self.load("experiment_a/paired_cat28_minus_comparator.json", optional=True)
+        self.summary = self.load("data/summary.json", optional=True)
+        self.splits = self.load("splits/summary.json", optional=True)
+        self.pred = self.load("experiment_a/test_predictions.csv", optional=True)
+        self.cat = self.pred.loc[self.pred.model.eq("cat28")].copy() if "model" in self.pred else pd.DataFrame()
         self.load("run_manifest.json")
 
     def t(self, ko, en):
@@ -502,7 +503,7 @@ class Guide:
         budget = cfg.get("budget", cfg.get("profiles", {}).get(cfg.get("profile"), {}))
         title = "현장 결과 읽기"  # HTML uses browser font fallback even without a plotting font.
         intro = "데이터 → 모델 비교 → 경보와 오류 → 인자 해석 → 사이트 → 아웃컴 순서로 읽습니다. 각 그림 아래에 읽는 법을 붙였습니다."
-        status = "CNN 수행" if cfg.get("cnn") else "CNN 미수행 · H4 미검증"
+        status = "CNN 수행 설정 (실제 완료 여부는 분석 상태 확인)" if cfg.get("cnn") else "CNN 미수행 · H4 미검증"
         status += " / 공식 모델 " + ("수행 설정" if cfg.get("official_models") else "미수행")
         context = f"{cfg.get('run_label', cfg.get('profile', ''))} · seeds={budget.get('seeds', [])} · CV={budget.get('cv_folds')} · bootstrap={budget.get('bootstrap')}"
         markup = ["<!doctype html><html lang='ko'><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>",
@@ -551,18 +552,19 @@ def run_onsite_figures(run, out, cfg, *, link_base=None):
     with plt.rc_context({"font.family": [font, "DejaVu Sans"], "font.size": 11, "axes.unicode_minus": False,
                          "axes.labelcolor": INK, "text.color": INK, "axes.titlepad": 16, "savefig.bbox": None}):
         guide = Guide(run, out, cfg, korean, link_base=link_base)
-        guide.cohort()
-        guide.performance()
-        guide.contrasts()
-        guide.operating()
-        guide.scores()
-        guide.curves()
-        importance = guide.contributions()
-        guide.shap_directions(importance)
-        guide.responses(importance)
-        guide.quality()
-        guide.sites()
-        guide.outcomes()
+        issues = Issues(run / "onsite_issues")
+        for name in ("cohort", "performance", "contrasts", "operating", "scores", "curves",
+                     "contributions", "quality", "sites", "outcomes"):
+            result = None
+            with issues.guard("figure:" + name):
+                result = getattr(guide, name)()
+            plt.close("all")
+            if name == "contributions" and result is not None:
+                for dependent in ("shap_directions", "responses"):
+                    with issues.guard("figure:" + dependent):
+                        getattr(guide, dependent)(result)
+                    plt.close("all")
+        issues.finish()
         guide.index()
     return out / "index.html"
 

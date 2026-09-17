@@ -56,12 +56,20 @@ def source(run, relative):
 
 def load_json(run, relative, default=None):
     path = source(run, relative)
-    return read_json(path) if path.is_file() else ({} if default is None else default)
+    return read_json(path) if path.is_file() and not failed_source(run, relative) else ({} if default is None else default)
+
+
+def failed_source(run, relative):
+    status = source(run, "pipeline_status.json")
+    if not status.is_file():
+        return False
+    row = read_json(status).get("stages", {}).get(Path(relative).parts[0], {})
+    return row.get("status") in {"failed", "unavailable"}
 
 
 def load_table(run, relative):
     path = source(run, relative)
-    if not path.is_file():
+    if not path.is_file() or failed_source(run, relative):
         return pd.DataFrame()
     try:
         return pd.read_csv(path, dtype={"record_id": str, "mother_id": str, "site": str}, low_memory=False)
@@ -471,7 +479,8 @@ def hypothesis_evidence(tables, profile=None):
 def write_review_report(out, tables, profile, image_files=()):
     """No arbitrary HTML/links/labels from the internal report are accepted."""
     title = "MOCK — 반출 심사용 집계 결과 (학술 결론 금지)" if profile == "mock" else "반출 심사용 집계 결과 — 기관 승인 전"
-    notes = ["이 묶음은 반출 승인이 아닙니다. 수신 기관의 검토가 완료될 때까지 현장에 보관하세요.",
+    notes = ["일부 데이터·분석이 제외되었을 수 있습니다. 결과 파일의 존재는 전체 분석 성공을 뜻하지 않습니다. 내부 pipeline_status.json에서 제외·미산출 상태를 확인하세요.",
+             "이 묶음은 반출 승인이 아닙니다. 수신 기관의 검토가 완료될 때까지 현장에 보관하세요.",
              "기존 집계 CSV는 csv/, 추가 데이터·학습·방문 진단 CSV는 visit_audit/csv/에 있습니다. 이미지 후보는 images/와 visit_audit/images/입니다. onsite_figures/는 개별 SHAP·원 기관 코드가 있는 현장용입니다.",
              "작거나 확인되지 않은 산모 수/양성·음성 산모 수의 집계는 억제됩니다. 기준을 통과해도 기관의 반출 기준 충족을 보장하지 않습니다.",
              "표의 공란은 미산출 또는 억제이며 0이 아닙니다. 작은 셀은 다른 표와의 차분으로 추론될 수도 있어 기관 검토가 필요합니다.",

@@ -216,7 +216,7 @@ class Visit:
 
     def __exit__(self, kind, error, tb):
         global _active
-        status = "interrupted" if kind and issubclass(kind, KeyboardInterrupt) else "failed" if kind else "complete"
+        status = "interrupted" if kind and issubclass(kind, KeyboardInterrupt) else "failed" if kind else getattr(self, "analysis_status", "complete")
         try:
             self.stop.set()
             self.thread.join(timeout=3)
@@ -230,16 +230,22 @@ class Visit:
             try:
                 self.export_diagnostics()
             except Exception as exc:
+                from .resilience import must_stop
+                if must_stop(exc):
+                    raise
                 save_json(self.path / "export_diagnostics_failure.json", dict(type=type(exc).__name__, error=str(exc)))
                 print(f"반출용 진단 생성 실패: {type(exc).__name__}. 내부 일지에서 원인을 확인하세요.", file=sys.stderr)
                 if error is None:
-                    save_json(self.path / "status.json", dict(status="export_diagnostics_failed", finished=stamp()))
                     if self.mode == "analysis" and self.run is not None and (self.run.parent / "status.json").is_file():
                         save_json(self.run / "export_diagnostics_failure.json", dict(type=type(exc).__name__, error=str(exc)))
-                        save_json(self.run.parent / "status.json", dict(status="failed", type=type(exc).__name__,
-                            details="internal/export_diagnostics_failure.json"))
-                    self.pointer("export_diagnostics_failed")
-                    raise
+                    status = "complete_with_issues"
+                    save_json(self.path / "status.json", dict(status=status, finished=stamp()))
+                    if self.mode == "analysis" and self.run is not None:
+                        status_path = self.run.parent / "status.json"
+                        value = json.loads(status_path.read_text()) if status_path.exists() else {}
+                        value.update(status=status, diagnostics_status="failed")
+                        save_json(status_path, value)
+                        save_json(self.run / "pipeline_status.json", value)
             self.pointer(status)
         finally:
             if self.run_lock is not None:
