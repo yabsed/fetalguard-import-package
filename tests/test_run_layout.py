@@ -127,6 +127,20 @@ class RunLayoutTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "변경/삭제"):
                     run.run_stage(root, "onsite_figures", action, target=target)
 
+    def test_export_failure_is_not_reported_as_a_complete_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, stack, lock = self.configured_runner(temporary, check=False)
+            with stack, patch.object(run, "run_stage"), \
+                    patch("fg.export_diagnostics.build_export_diagnostics", side_effect=ValueError("diagnostic render failed")):
+                with self.assertRaisesRegex(ValueError, "diagnostic render failed"):
+                    run.main()
+            latest = json.loads((root / "LATEST.json").read_text())
+            status = json.loads((Path(latest["run"]) / "status.json").read_text())
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(status["details"], "internal/export_diagnostics_failure.json")
+            self.assertEqual(json.loads((root / "LATEST_VISIT.json").read_text())["status"], "export_diagnostics_failed")
+            lock.close.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
