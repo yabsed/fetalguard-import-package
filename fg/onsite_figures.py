@@ -1,10 +1,15 @@
 """Question-led, onsite reading guide from saved results; no fitting or selection.
 
-Unlike the export atlas, these figures use unscreened internal data, native
-site codes, actual feature ranges and per-segment SHAP. Keep them in internal/.
+These figures use unscreened data, native site codes, actual feature ranges
+and per-segment SHAP. The onsite_figures/ directory remains onsite-only even
+when it is located inside the export_review workspace.
 """
 import html
+import os
 from pathlib import Path
+import re
+import tempfile
+from urllib.parse import quote
 
 import matplotlib
 matplotlib.use("Agg")
@@ -20,6 +25,8 @@ from .supplementary import calibration_bins
 
 
 BLUE, ORANGE, INK, GRAY = "#247b91", "#d26742", "#223649", "#758493"
+ONSITE_DIRECTORY = re.compile(r"onsite_figures(?:_[A-Za-z0-9_-]+)?\Z")
+ONSITE_IMAGE = re.compile(r"\d{2}_[a-z0-9_]+\.(?:png|pdf)\Z")
 FEATURES = {
     "fhr_mean": "평균 심박", "fhr_min": "최저 심박", "fhr_max": "최고 심박", "fhr_sd": "심박 표준편차",
     "stv": "표본 간 변동 (STV 대용치)", "brady_frac": "서맥 비율", "tachy_frac": "빈맥 비율",
@@ -117,8 +124,9 @@ def feature_unit(feature):
 
 
 class Guide:
-    def __init__(self, run, out, cfg, korean):
+    def __init__(self, run, out, cfg, korean, link_base=None):
         self.run, self.out, self.cfg, self.korean = run, out, cfg, korean
+        self.link_base = Path(link_base) if link_base is not None else out
         self.cards, self.sources = [], {}
         self.metrics = self.load("experiment_a/holdout_metrics.json")
         self.metrics.update(self.load("experiment_b/metrics.json", optional=True))
@@ -507,7 +515,8 @@ class Guide:
             markup.append(f"<p class='meta'>{html.escape(cfg['analysis_role'])}</p>")
         for path, label in [("report.html", "전체 수치·분석 보고서"), ("case_review.html", "TP/TN/FP/FN 실제 파형 사례")]:
             if (self.run / "report" / path).exists():
-                markup.append(f"<a href='../report/{path}'>{label}</a> · ")
+                relative = Path(os.path.relpath(self.run / "report" / path, self.link_base)).as_posix()
+                markup.append(f"<a href='{html.escape(quote(relative), quote=True)}'>{label}</a> · ")
         markup.append("<nav><ol>")
         markup += [f"<li><a href='#{c['name']}'>{html.escape(c['title'])}</a></li>" for c in self.cards]
         markup.append("</ol></nav>")
@@ -523,12 +532,13 @@ class Guide:
         for name, digest in self.sources.items():
             if sha256(self.run / name) != digest:
                 raise ValueError(f"Source changed during figure generation: {name}")
-        write_json(self.out / "manifest.json", dict(format=1, purpose="onsite_understanding", language="ko" if self.korean else "en",
+        write_json(self.out / "manifest.json", dict(format=1, purpose="onsite_understanding",
+            review_status="onsite_only_not_screened", language="ko" if self.korean else "en",
             source_files=self.sources, generator_sha256=sha256(__file__), figures=self.cards,
             files={p.name: sha256(p) for p in sorted(self.out.iterdir()) if p.is_file() and p.name != "manifest.json"}))
 
 
-def run_onsite_figures(run, out, cfg):
+def run_onsite_figures(run, out, cfg, *, link_base=None):
     run, out = Path(run).resolve(), Path(out).resolve()
     reserved = {"data", "splits", "experiment_a", "experiment_b", "supplementary", "official", "report"}
     if (run.name != "internal" or out.parent != run or not (run / "run_manifest.json").is_file()
@@ -538,7 +548,7 @@ def run_onsite_figures(run, out, cfg):
     font, korean = choose_font()
     with plt.rc_context({"font.family": [font, "DejaVu Sans"], "font.size": 11, "axes.unicode_minus": False,
                          "axes.labelcolor": INK, "text.color": INK, "axes.titlepad": 16, "savefig.bbox": None}):
-        guide = Guide(run, out, cfg, korean)
+        guide = Guide(run, out, cfg, korean, link_base=link_base)
         guide.cohort()
         guide.performance()
         guide.contrasts()
@@ -552,4 +562,62 @@ def run_onsite_figures(run, out, cfg):
         guide.sites()
         guide.outcomes()
         guide.index()
+    return out / "index.html"
+
+
+def validate_onsite_figures(out, run=None):
+    """Validate the separate onsite manifest; this never grants export screening."""
+    out = Path(out)
+    paths = list(out.rglob("*"))
+    if out.is_symlink() or any(p.is_symlink() for p in (*out.parents, *paths)):
+        raise ValueError("Symbolic links are not allowed in onsite figures")
+    actual = {p.name for p in paths if p.is_file()}
+    if any(not p.is_file() or p.parent != out for p in paths):
+        raise ValueError("Unexpected nested onsite figure directory")
+    if not {"manifest.json", "index.html", "README.md"}.issubset(actual):
+        raise ValueError("Incomplete onsite figure manifest")
+    if any(n not in {"manifest.json", "index.html", "README.md"} and not ONSITE_IMAGE.fullmatch(n) for n in actual):
+        raise ValueError("Unexpected file in onsite figures")
+    guide = read_json(out / "manifest.json")
+    if guide.get("purpose") != "onsite_understanding":
+        raise ValueError("Invalid onsite purpose")
+    # Older guides did not record review_status, but are still strictly onsite-only.
+    if guide.get("review_status", "onsite_only_not_screened") != "onsite_only_not_screened":
+        raise ValueError("Onsite figures cannot claim screening approval")
+    if set(guide["files"]) != actual - {"manifest.json"}:
+        raise ValueError("Onsite manifest inventory mismatch")
+    for name, digest in guide["files"].items():
+        if sha256(out / name) != digest:
+            raise ValueError("Onsite figure checksum mismatch")
+    for name, digest in guide["source_files"].items():
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts or "\\" in name:
+            raise ValueError("Invalid onsite source path")
+        if run is not None:
+            path = Path(run) / relative
+            if path.is_symlink() or any(p.is_symlink() for p in path.parents) or sha256(path) != digest:
+                raise ValueError("Onsite source checksum mismatch")
+    return {"status": "onsite_only_not_screened", "files": len(actual)}
+
+
+def build_onsite_figures(run, out, cfg):
+    """Atomically publish a guide with links relative to its final destination."""
+    run, out = Path(run).absolute(), Path(out).absolute()
+    if (run.name != "internal" or not ONSITE_DIRECTORY.fullmatch(out.name)
+            or out.parent not in (run, run.parent / "export_review")):
+        raise ValueError("Choose an onsite_figures directory inside internal/ or export_review/")
+    if out.is_symlink() or any(p.is_symlink() for p in (*out.parents, run, *run.parents)):
+        raise ValueError("Symbolic-link onsite destinations are not accepted")
+    if out.exists() and any(out.iterdir()):
+        # Recover a crash after publication but before the runner wrote its marker.
+        validate_onsite_figures(out, run)
+        return out / "index.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="onsite-build-", dir=run) as temporary:
+        staging = Path(temporary)
+        run_onsite_figures(run, staging, cfg, link_base=out)
+        validate_onsite_figures(staging, run)
+        if out.exists():
+            out.rmdir()  # The runner may have pre-created this empty target.
+        staging.rename(out)
     return out / "index.html"

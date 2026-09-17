@@ -57,7 +57,9 @@ class ExportReviewTests(unittest.TestCase):
                 self.assertNotIn(self.secret, text, path)
                 self.assertNotIn(str(self.internal), text, path)
         self.assertFalse((self.out / "model.json").exists())
-        self.assertEqual(pd.read_csv(self.out / "loso.csv").site.tolist(), ["S01", "S01"])
+        self.assertEqual(pd.read_csv(self.out / "csv/loso.csv").site.tolist(), ["S01", "S01"])
+        self.assertFalse(list(self.out.glob("*.csv")))
+        self.assertIn("href='csv/loso.csv'", (self.out / "report.html").read_text())
         summary = validate_review_bundle(self.out)
         self.assertTrue(summary["manifest_hashes_match"])
         manifest = json.loads((self.out / "EXPORT_MANIFEST.json").read_text())
@@ -212,7 +214,29 @@ class ExportReviewTests(unittest.TestCase):
 
     def test_manifest_hash_detects_modified_data(self):
         run_export_review(self.internal, self.out, self.cfg)
-        (self.out / "model_comparison.csv").write_text("tampered")
+        (self.out / "csv/model_comparison.csv").write_text("tampered")
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            validate_review_bundle(self.out)
+
+    def test_onsite_extension_has_separate_inventory_and_cannot_weaken_image_screening(self):
+        run_export_review(self.internal, self.out, self.cfg)
+        manifest_file = self.out / "EXPORT_MANIFEST.json"
+        original = manifest_file.read_bytes()
+        guide = self.out / "onsite_figures"
+        guide.mkdir()
+        (guide / "index.html").write_text(self.secret)
+        (guide / "README.md").write_text("Onsite only")
+        write_json(guide / "manifest.json", {"purpose": "onsite_understanding", "source_files": {},
+            "review_status": "onsite_only_not_screened",
+            "files": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in guide.iterdir()}})
+        result = validate_review_bundle(self.out)
+        self.assertEqual(result["onsite_only"]["onsite_figures"]["status"], "onsite_only_not_screened")
+        self.assertEqual(manifest_file.read_bytes(), original)
+        (guide / "private.csv").write_text(self.secret)
+        with self.assertRaisesRegex(ValueError, "Unexpected file"):
+            validate_review_bundle(self.out)
+        (guide / "private.csv").unlink()
+        (guide / "index.html").write_text("modified")
         with self.assertRaisesRegex(ValueError, "checksum"):
             validate_review_bundle(self.out)
 

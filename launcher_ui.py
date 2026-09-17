@@ -44,7 +44,7 @@ def launch():
                     log.value = (log.value + line)[-50000:]
                 code = process.wait()
                 status.value = ("사전검사 완료 — 학습은 실행하지 않았습니다." if check_only else
-                    "완료 — internal/report는 현장용, export_review는 반출 심사용입니다. 로그 마지막 두 경로를 여세요.") if code == 0 else f"중단/실패 (exit {code}). 마지막 오류를 확인하세요. 완료된 학습은 재실행 시 재사용됩니다."
+                    "완료 — export_review/onsite_figures/index.html에서 결과를 읽으세요. 선별 집계 CSV는 export_review/csv/, 이미지 심사 후보는 export_review/images/입니다.") if code == 0 else f"중단/실패 (exit {code}). 마지막 오류를 확인하세요. 완료된 학습은 재실행 시 재사용됩니다."
             except Exception as exc:
                 log.value += str(exc)
                 status.value = "실행 실패"

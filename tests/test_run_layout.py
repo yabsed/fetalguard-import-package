@@ -63,16 +63,35 @@ class RunLayoutTests(unittest.TestCase):
             self.assertFalse((analysis / "failure.json").exists())
             lock.close.assert_called_once()
 
-    def test_onsite_stage_is_internal_and_linked_in_latest(self):
+    def test_onsite_stage_is_in_review_and_linked_in_latest(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, stack, lock = self.configured_runner(temporary, check=False)
             with stack, patch.object(run, "run_stage") as stage:
                 run.main()
             latest = json.loads((root / "LATEST.json").read_text())
-            self.assertEqual(Path(latest["onsite_figures"]), Path(latest["internal"]) / "onsite_figures/index.html")
+            self.assertEqual(Path(latest["onsite_figures"]), Path(latest["export_review"]) / "onsite_figures/index.html")
             names = [call.args[1] for call in stage.call_args_list]
-            self.assertEqual(names[-3:], ["report", "onsite_figures", "export_review"])
-            self.assertEqual(stage.call_args_list[-2].args[0], Path(latest["internal"]))
+            self.assertEqual(names[-3:], ["report", "export_review", "onsite_figures"])
+            self.assertEqual(stage.call_args_list[-1].args[0], Path(latest["run"]))
+            self.assertEqual(stage.call_args_list[-1].kwargs["target"], Path(latest["export_review"]) / "onsite_figures")
+
+    def test_nested_guide_stage_resumes_and_detects_tampering_without_changing_export_marker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            export = root / "export_review"
+            with patch("fg.common.note"):
+                run.run_stage(root, "export_review", lambda out: (out / "report.html").write_text("report"))
+                original = (root / ".state/export_review.json").read_bytes()
+                target = export / "onsite_figures"
+                action = Mock(side_effect=lambda out: (out / "index.html").write_text("guide"))
+                run.run_stage(root, "onsite_figures", action, target=target)
+                run.run_stage(root, "export_review", Mock(side_effect=AssertionError("must resume")))
+                run.run_stage(root, "onsite_figures", action, target=target)
+                action.assert_called_once()
+                self.assertEqual((root / ".state/export_review.json").read_bytes(), original)
+                (target / "index.html").write_text("tampered")
+                with self.assertRaisesRegex(ValueError, "변경/삭제"):
+                    run.run_stage(root, "onsite_figures", action, target=target)
 
 
 if __name__ == "__main__":

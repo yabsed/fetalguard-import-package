@@ -2,9 +2,11 @@
 
 데이터 경로와 결과 저장 경로만 지정하면 실험 A·B, 부가 분석, 공식 모델 재현, 내부 검토 보고서와 **반출 심사용 집계 묶음**을 생성한다. 원천 데이터, 기존 실험 결과, 자체 사전학습 모델, 가상환경, 도커 이미지는 포함하지 않는다. 런타임은 이 폴더만으로 독립하며 인터넷·다른 실험 폴더·학습된 자체 모델을 요구하지 않는다.
 
-**현장에서 결과를 이해하려면 `internal/onsite_figures/index.html`부터 연다.** 데이터 구성 → 모델 비교 → 오류·경보 → 인자 해석 → 사이트 → 아웃컴 순서의 질문별 그래프와 해설이다. 혼동행렬, 점수 분포·확률 보정, SHAP 방향, 실제 인자 값 범위별 판독 비율을 함께 보여준다. 각 그림은 PNG와 PDF로 저장하며 새 실행에서 자동 생성한다. 설치된 한글 폰트가 있으면 한글, 없으면 영문으로 그린다. HTML 안내는 한글이다.
+**현장에서 결과를 이해하려면 `export_review/onsite_figures/index.html`부터 연다.** 데이터 구성 → 모델 비교 → 오류·경보 → 인자 해석 → 사이트 → 아웃컴 순서의 질문별 그래프와 해설이다. 혼동행렬, 점수 분포·확률 보정, SHAP 방향, 실제 인자 값 범위별 판독 비율을 함께 보여준다. 각 그림은 PNG와 PDF로 저장하며 새 실행에서 자동 생성한다. 설치된 한글 폰트가 있으면 한글, 없으면 영문으로 그린다. HTML 안내는 한글이다. 집계 CSV는 `export_review/csv/`에 모은다.
 
-이미 끝난 실행에는 `python -B tools/build_onsite_figures.py /결과/full-실행해시`로 **재학습 없이** 추가한다. 기존 폴더가 있으면 `--name onsite_figures_v2`처럼 새 이름을 지정한다. 이 자료는 개별 구간 SHAP·원 사이트 코드·실제 값 범위를 포함하는 현장 전용이다.
+이미 끝난 실행에는 `python -B tools/build_onsite_figures.py /결과/full-실행해시`로 **재학습 없이** 추가한다. 새 schema 3 실행에서는 `export_review/`에 생성하고, 과거 실행에는 기존 레이아웃을 보존해 `internal/`에 추가한다. 기존 폴더가 있으면 `--name onsite_figures_v2`처럼 새 이름을 지정한다. 이 자료는 개별 구간 SHAP·원 사이트 코드·실제 값 범위를 포함하는 현장 전용이며, `export_review` 안에 있어도 선별된 반출 후보가 아니다.
+
+첫 방문에서 무엇을 조사하고 두 번째 방문의 실험을 어떻게 결정할지는 [FIRST_VISIT_STRATEGY.md](FIRST_VISIT_STRATEGY.md)에 정리했다. 현재 수집되는 정보와 추가 개발이 필요한 구조 조사·학습 진단·실행 일지를 구분한다.
 
 **그래프 이미지만 반출 심사에 제출할 경우:** 실행 후 **`export_review/images/`의 PNG만** 선택한다. 주 성능·차이·CI부터 인자 설명, CNN·EMR·LOSO·아웃컴까지 28개 집계 영역을 페이지별 고해상도 그래프로 만든다. CSV·HTML·JSON·PDF는 이 이미지 폴더에 들어가지 않는다. 이미지도 승인 전 심사 후보이며, 개별 파형·개인별 예측은 포함하지 않는다. 상세 구성은 [OUTPUTS.md](OUTPUTS.md)에 있다.
 
@@ -109,15 +111,15 @@ bash 본선/02-반입할-파일/MOCK.sh
 
 ## 결과·중단·재개
 
-결과는 지정한 폴더 아래 `full-<실행해시>` 또는 `mock-<실행해시>`에 저장된다. 현장 화면은 **`internal/report/report.html`**, 심사 준비용 화면은 **`export_review/report.html`**, 이미지 제출 후보는 **`export_review/images/`**다. 상위 `LATEST.json`에 경로가 기록된다.
+결과는 지정한 폴더 아래 `full-<실행해시>` 또는 `mock-<실행해시>`에 저장된다. 현장 시작 화면은 **`export_review/onsite_figures/index.html`**, 세부 보고서는 **`internal/report/report.html`**, 집계 검토 화면은 **`export_review/report.html`**, 이미지 제출 후보는 **`export_review/images/`**다. 집계 CSV는 **`export_review/csv/`**다. 상위 `LATEST.json`에 화면 경로가 기록된다.
 
-`internal/` 아래 `data/`, `splits/`, `experiment_a/`, `experiment_b/`, `supplementary/`, `official/`, `report/`, `onsite_figures/`가 순서대로 만들어진다. 원본 경로·입력별 해시·모델·개인별 예측도 이 안에만 보관한다. 실행 전에 `protocol.json`으로 규약을 기록한다. 환경, 설정, 입력 파일 해시, 패키지 해시, 기존 산모 목록 해시가 실행 ID에 들어가므로 서로 다른 데이터·버전·예산의 결과가 섞이지 않는다.
+`internal/` 아래 `data/`, `splits/`, `experiment_a/`, `experiment_b/`, `supplementary/`, `official/`, `report/`가 순서대로 만들어진다. 다음으로 `export_review/` 집계 묶음과 그 안의 `onsite_figures/`를 생성한다. 원본·모델·개인별 예측은 `internal/`에 보관하고, 현장 그림의 입력 해시는 `onsite_figures/manifest.json`에도 기록한다. 실행 전에 `protocol.json`으로 규약을 기록한다. 환경, 설정, 입력 파일 해시, 패키지 해시, 기존 산모 목록 해시가 실행 ID에 들어가므로 서로 다른 데이터·버전·예산의 결과가 섞이지 않는다.
 
 같은 명령을 재실행하면 완료 단계는 산출물 해시를 검증한 뒤 건너뛴다. 중간 학습 단계에서는 이미 저장한 트리, CNN epoch 체크포인트, 이미지별 YOLO 추론 결과를 재사용한다. 완료 산출물이 훼손되면 덮어쓰지 않고 오류로 알린다. 같은 출력에 동시 실행하는 것은 OS 파일 잠금으로 막는다. 오류는 비정상 exit code와 `status.json`에 남는다.
 
 `config.json`만 현장 설정 파일로 수정할 수 있다. 다른 승인 파일이 바뀌면 무결성 검사가 실패한다. 일부 분석을 의도적으로 비활성화할 경우 `cnn` / `official_models`를 false로 설정할 수 있지만 결과에 미수행을 명시한다. 누락 아웃컴·단일 클래스 기관 등은 상태 파일에 이유가 남는다. 수치 신호·산모 ID·주 라벨의 오류는 전체 분석을 중단한다.
 
-마지막에 `export_review/`를 생성한다. 원본 보고서를 복사하지 않고 허용한 집계 필드로 CSV·HTML·그림·설정 요약을 다시 만든다. **이미지 전용 심사에는 `images/`의 PNG만 선택**하며, CSV·HTML·JSON·PDF는 현장 검토용으로 남긴다. 식별자, 원본 경로·파일별 해시, 개인별 예측, 가중치는 포함하지 않는다. 작은 집단은 기본 `export_min_mothers=10`으로 선별·억제하며 기관 규정을 대신하지 않는다. `EXPORT_MANIFEST.json`에 목록·해시·`pending_institution_review`를 표시한다. **심사 후보이지 반출 승인 완료가 아니다.** 내부 결과 폴더 전체를 반출하지 않는다.
+`export_review/`의 집계 보고서는 원본 보고서를 복사하지 않고 허용한 집계 필드로 CSV·HTML·그림·설정 요약을 다시 만든다. **이미지 전용 심사에는 `images/`의 PNG만 선택**하며, CSV·HTML·JSON·PDF는 현장 검토용으로 남긴다. 선별 집계에는 식별자, 원본 경로·파일별 해시, 개인별 예측, 가중치를 포함하지 않는다. 작은 집단은 기본 `export_min_mothers=10`으로 선별·억제한다. `EXPORT_MANIFEST.json`의 schema 3은 선별 집계의 목록·해시만 관리한다. 같은 폴더의 `onsite_figures/`는 비선별 현장 전용 자료로 자체 manifest와 별도 완료 마커를 사용한다. **상위 폴더 전체가 반출 후보라는 뜻이 아니다.** 기존 결과는 이동하거나 다시 쓰지 않는다.
 
 ## 개발·검증·반입 ZIP
 

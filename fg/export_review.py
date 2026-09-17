@@ -471,6 +471,7 @@ def write_review_report(out, tables, profile, image_files=()):
     """No arbitrary HTML/links/labels from the internal report are accepted."""
     title = "MOCK — 반출 심사용 집계 결과 (학술 결론 금지)" if profile == "mock" else "반출 심사용 집계 결과 — 기관 승인 전"
     notes = ["이 묶음은 반출 승인이 아닙니다. 수신 기관의 검토가 완료될 때까지 현장에 보관하세요.",
+             "CSV는 csv/에 모았습니다. onsite_figures/가 있으면 현장 이해용 자료이며 개별 SHAP·원 기관 코드 등을 포함합니다. 반출 후보는 images/의 선별된 PNG입니다. 상위 폴더 전체를 제출하지 마세요.",
              "작거나 확인되지 않은 산모 수/양성·음성 산모 수의 집계는 억제됩니다. 기준을 통과해도 기관의 반출 기준 충족을 보장하지 않습니다.",
              "표의 공란은 미산출 또는 억제이며 0이 아닙니다. 작은 셀은 다른 표와의 차분으로 추론될 수도 있어 기관 검토가 필요합니다.",
              "산모 군집 부트스트랩 신뢰구간은 고정된 모델의 표본 불확실성입니다. 0을 포함하는 차이는 동등성의 증명이 아닙니다.",
@@ -539,9 +540,11 @@ def write_review_report(out, tables, profile, image_files=()):
     for name, frame in tables.items():
         # Names are fixed in this module; DataFrame strings are allowlisted above.
         markup.append("<h2>" + name.replace("_", " ") + "</h2><div class='scroll'>")
+        markup.append(f"<p><a href='csv/{name}.csv'>CSV</a></p>")
         markup.append(frame.to_html(index=False, na_rep="suppressed / unavailable", float_format=lambda v: f"{v:.5g}") if len(frame.columns) else "<p>Not available</p>")
         markup.append("</div>")
         markdown.append("## " + name.replace("_", " "))
+        markdown.append(f"[CSV](csv/{name}.csv)")
         markdown.append(frame.to_markdown(index=False, floatfmt=".5g") if len(frame.columns) else "Not available")
     markup.append("</html>")
     (out / "report.html").write_text("\n".join(markup), encoding="utf-8")
@@ -554,10 +557,11 @@ def _build_export_review(run, out, cfg):
     if out.is_symlink() or any(p.is_symlink() for p in out.parents):
         raise ValueError("Symbolic-link export destinations are not accepted")
     out.mkdir(parents=True, exist_ok=True)
+    (out / "csv").mkdir(exist_ok=True)
     tables = collect_tables(run, cfg)
     files = []
     for name, frame in tables.items():
-        path = out / (name + ".csv")
+        path = out / "csv" / (name + ".csv")
         # Preserve a readable schema even for absent optional analyses.
         (frame if len(frame.columns) else pd.DataFrame(columns=["review_status"])).to_csv(path, index=False)
         files.append(path)
@@ -591,7 +595,9 @@ def _build_export_review(run, out, cfg):
     files += write_review_report(out, tables, profile, image_files=image_files)
     hashes = [{"file": path.relative_to(out).as_posix(), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                "bytes": path.stat().st_size} for path in sorted(files)]
-    write_json(out / "EXPORT_MANIFEST.json", {"schema_version": 2, "review_status": "pending_institution_review",
+    write_json(out / "EXPORT_MANIFEST.json", {"schema_version": 3, "review_status": "pending_institution_review",
+               "manifest_scope": "screened_aggregates_only", "csv_directory": "csv",
+               "onsite_directory_prefix": "onsite_figures", "whole_directory_exportable": False,
                "image_submission_directory": "images", "image_submission_format": "RGB PNG only",
                "screening_is_approval": False, "source_material_included": False,
                "excluded_categories": ["identifiers", "individual_predictions", "raw_signals", "model_weights", "source_paths", "source_file_hashes"],
@@ -625,7 +631,7 @@ EXPORT_TABLES = {"model_comparison", "paired_comparisons", "cohort_counts", "cv_
 
 
 def validate_review_bundle(out):
-    """Verify fixed output inventory, hashes and self-contained HTML references."""
+    """Verify screened aggregates and separately validate any onsite-only guides."""
     from html.parser import HTMLParser
     root = Path(out)
     if root.is_symlink():
@@ -634,17 +640,34 @@ def validate_review_bundle(out):
     if any(path.is_symlink() for path in paths):
         raise ValueError("Symbolic links are not allowed in a review bundle")
     actual = {path.relative_to(root).as_posix() for path in paths if path.is_file()}
-    allowed = {name + ".csv" for name in EXPORT_TABLES} | {
+    manifest = read_json(root / "EXPORT_MANIFEST.json")
+    schema = manifest.get("schema_version", 1)
+    onsite = {}
+    if schema == 3:
+        if (manifest.get("manifest_scope") != "screened_aggregates_only"
+                or manifest.get("csv_directory") != "csv"
+                or manifest.get("onsite_directory_prefix") != "onsite_figures"
+                or manifest.get("whole_directory_exportable") is not False):
+            raise ValueError("Invalid review workspace scope")
+        from .onsite_figures import ONSITE_DIRECTORY, validate_onsite_figures
+        for directory in root.iterdir():
+            if directory.is_dir() and ONSITE_DIRECTORY.fullmatch(directory.name):
+                onsite[directory.name] = validate_onsite_figures(directory)
+        # These files have their own inventory/hashes and are not screened exports.
+        actual = {name for name in actual if name.split("/")[0] not in onsite}
+    elif schema not in (1, 2):
+        raise ValueError("Unsupported review schema")
+    csv_prefix = "csv/" if schema == 3 else ""
+    allowed = {csv_prefix + name + ".csv" for name in EXPORT_TABLES} | {
         "report.html", "report.md", "protocol_summary.json", "EXPORT_MANIFEST.json", "figures/model_comparison.png", "figures/model_comparison.pdf",
         "figures/feature_response_training.png", "figures/feature_response_training.pdf"}
     from .export_images import IMAGE_NAME, validate_image_directory
     allowed |= {name for name in actual if name.startswith("images/") and IMAGE_NAME.fullmatch(name.removeprefix("images/"))}
     if actual - allowed:
         raise ValueError("Unrecognized files in aggregate review bundle")
-    manifest = read_json(root / "EXPORT_MANIFEST.json")
     if manifest.get("review_status") != "pending_institution_review" or manifest.get("screening_is_approval") is not False:
         raise ValueError("Review status missing or invalid")
-    if manifest.get("schema_version") == 2 or (root / "images").exists():
+    if schema >= 2 or (root / "images").exists():
         validate_image_directory(root / "images")
     listed = {entry["file"] for entry in manifest["files"]}
     if listed != actual - {"EXPORT_MANIFEST.json"} or len(listed) != len(manifest["files"]):
@@ -661,8 +684,10 @@ def validate_review_bundle(out):
             for key, value in attrs:
                 allowed_images = {name for name in actual if name.startswith("images/") and IMAGE_NAME.fullmatch(name.removeprefix("images/"))}
                 allowed_images |= {"figures/model_comparison.png", "figures/feature_response_training.png"}
-                if key.startswith("on") or (key in ("href", "src") and value not in allowed_images):
+                allowed_links = allowed_images | {name for name in actual if name.startswith("csv/") and name.endswith(".csv")}
+                if key.startswith("on") or (key == "src" and value not in allowed_images) or (key == "href" and value not in allowed_links):
                     raise ValueError("Unexpected link in aggregate review report")
 
     Links().feed((root / "report.html").read_text(encoding="utf-8"))
-    return {"status": "validated_pending_institution_review", "files": len(actual), "manifest_hashes_match": True}
+    return {"status": "validated_pending_institution_review", "files": len(actual), "manifest_hashes_match": True,
+            "onsite_only": onsite, "whole_directory_exportable": False}

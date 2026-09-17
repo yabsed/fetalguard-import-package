@@ -35,13 +35,13 @@ def metric_values(frame, result, label, score="score"):
     return 1
 
 
-def stage_hashes(root, stage):
+def stage_hashes(root, stage, target=None):
     marker = read_json(root / ".state" / f"{stage}.json")
     assert marker["files"], (stage, "empty stage marker")
     for name, digest in marker["files"].items():
         relative = Path(name)
         assert not relative.is_absolute() and ".." not in relative.parts, (stage, "invalid artifact path")
-        path = root / stage / relative
+        path = (Path(target) if target is not None else root / stage) / relative
         assert path.is_file() and sha256(path) == digest, (stage, name)
 
 
@@ -115,13 +115,14 @@ def validate_run(path, expect_records=None, check_original_xgb=False):
         stage_hashes(run, stage)
     if (run / ".state/onsite_figures.json").exists():
         stage_hashes(run, "onsite_figures")
-    if (run / "onsite_figures").is_dir():
-        guide = read_json(run / "onsite_figures/manifest.json")
-        for name, digest in guide["files"].items():
-            assert Path(name).name == name and sha256(run / "onsite_figures" / name) == digest, ("onsite_figures", name)
-        for name, digest in guide["source_files"].items():
-            assert not Path(name).is_absolute() and ".." not in Path(name).parts
-            assert sha256(run / name) == digest, ("onsite_figures source", name)
+    if v2 and (root / ".state/onsite_figures.json").exists():
+        stage_hashes(root, "onsite_figures", target=root / "export_review/onsite_figures")
+    from fg.onsite_figures import ONSITE_DIRECTORY, validate_onsite_figures
+    for parent in (run, root / "export_review"):
+        if parent.is_dir():
+            for directory in parent.iterdir():
+                if directory.is_dir() and ONSITE_DIRECTORY.fullmatch(directory.name):
+                    validate_onsite_figures(directory, run)
     summary = read_json(run / "data/summary.json")
     if expect_records is not None:
         assert summary["records"] == expect_records, summary
@@ -191,7 +192,9 @@ def validate_run(path, expect_records=None, check_original_xgb=False):
         from fg.export_review import validate_review_bundle
         export = validate_review_bundle(root / "export_review")
         banned_columns = {"record_id", "mother_id", "seg_idx", "target", "score", "score_emr", "path", "model_file", "source_path"}
-        for file in (root / "export_review").glob("*.csv"):
+        review_manifest = read_json(root / "export_review/EXPORT_MANIFEST.json")
+        csv_root = root / "export_review" / ("csv" if review_manifest.get("schema_version") == 3 else "")
+        for file in csv_root.glob("*.csv"):
             columns = pd.read_csv(file, nrows=0).columns
             assert not banned_columns.intersection(columns), (file.name, "individual columns in review bundle")
     return {"status": "PASS", "layout": "v2" if v2 else "legacy", "records": summary["records"], "mothers": summary["mothers"],

@@ -115,9 +115,9 @@ def preflight(cfg):
                 cuda=torch.version.cuda, gpu=torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)
 
 
-def run_stage(run, name, action):
+def run_stage(run, name, action, *, target=None):
     from fg.common import sha256, write_json, read_json, note
-    target = run / name
+    target = Path(target) if target is not None else run / name
     marker = run / ".state" / (name + ".json")
     if marker.exists():
         completed = read_json(marker)
@@ -188,7 +188,7 @@ def main():
         return
     write_json(output / "LATEST.json", {"run": str(run_root), "internal": str(run),
         "report": str(run / "report/report.html"), "export_review": str(run_root / "export_review"),
-        "onsite_figures": str(run / "onsite_figures/index.html"),
+        "onsite_figures": str(run_root / "export_review/onsite_figures/index.html"),
         "export_report": str(run_root / "export_review/report.html"),
         "export_images": str(run_root / "export_review/images"), "export_status": "pending_institution_review"})
     from fg.evaluation import create_splits
@@ -197,7 +197,7 @@ def main():
     from fg.supplementary import run_supplementary
     from fg.official import run_official
     from fg.report import run_report
-    from fg.onsite_figures import run_onsite_figures
+    from fg.onsite_figures import build_onsite_figures
     from fg.export_review import run_export_review
     status = run_root / "status.json"
     write_json(status, {"status": "running", "profile": cfg["profile"], "started": datetime.now(timezone.utc).isoformat()})
@@ -209,8 +209,9 @@ def main():
         run_stage(run, "supplementary", lambda out: run_supplementary(run, out, cfg))
         run_stage(run, "official", lambda out: run_official(PACKAGE, run, out, cfg, catalog))
         run_stage(run, "report", lambda out: run_report(run, out, cfg))
-        run_stage(run, "onsite_figures", lambda out: run_onsite_figures(run, out, cfg))
         run_stage(run_root, "export_review", lambda out: run_export_review(run, out, cfg))
+        run_stage(run_root, "onsite_figures", lambda out: build_onsite_figures(run, out, cfg),
+                  target=run_root / "export_review/onsite_figures")
     except BaseException as exc:
         write_json(run / "failure.json", {"status": "failed", "error": str(exc),
                    "type": type(exc).__name__, "traceback": traceback.format_exc()})
@@ -220,11 +221,11 @@ def main():
         raise
     write_json(status, {"status": "complete", "profile": cfg["profile"], "design_version": cfg["design_version"],
                         "report": str(run / "report/report.html"), "export_review": str(run_root / "export_review"),
-                        "onsite_figures": str(run / "onsite_figures/index.html"),
+                        "onsite_figures": str(run_root / "export_review/onsite_figures/index.html"),
                         "export_status": "pending_institution_review",
                         "finished": datetime.now(timezone.utc).isoformat()})
     note(f"SUCCESS — 현장 보고서: {run / 'report/report.html'}")
-    note(f"현장 이해용 그래프: {run / 'onsite_figures/index.html'}")
+    note(f"현장 이해용 그래프: {run_root / 'export_review/onsite_figures/index.html'}")
     note(f"반출 심사용 집계 결과 (승인 전): {run_root / 'export_review/report.html'}")
     note(f"이미지 전용 심사 폴더 (PNG만): {run_root / 'export_review/images'}")
     run_lock.close()

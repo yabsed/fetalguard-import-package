@@ -183,7 +183,7 @@ def run_report(run, out, cfg):
     markup = ["<!doctype html><meta charset='utf-8'><title>CTG report</title>",
         "<style>body{font:16px system-ui;margin:3em auto;max-width:1200px;color:#20303c}table{border-collapse:collapse;font-size:13px}td,th{padding:8px;border-bottom:1px solid #ddd}img{max-width:100%}.note{background:#f2f6f8;padding:1em}a{color:#176887}</style>",
         f"<h1>현장 전용 — {html.escape(title)}</h1>", f"<p>{data['records']:,} records / {data['mothers']:,} mothers / {data['segments']:,} usable segments</p>",
-        "<p><a href='../onsite_figures/index.html'>현장 결과 읽기: 질문별 그래프와 해설</a></p>",
+        "<p><a href='../../export_review/onsite_figures/index.html'>현장 결과 읽기: 질문별 그래프와 해설</a></p>",
         "<div class='note'>" + "".join(f"<p>{html.escape(n)}</p>" for n in notes) + "</div>",
         f"<p><a href='{html.escape(case_review_path, quote=True)}'>현장 전용 사례 검토: TP/TN/FP/FN 파형·추출 인자·가용 SHAP</a></p>",
         "<h2>연구 질문과 증거</h2>", evidence["hypothesis_evidence"].to_html(index=False, na_rep="미산출", float_format=lambda x: f"{x:.4f}"),
@@ -210,7 +210,7 @@ def run_report(run, out, cfg):
     md = f"# 현장 전용 — {title}\n\n{data['records']:,} records / {data['mothers']:,} mothers / {data['segments']:,} segments\n\n"
     md += "\n\n".join(notes) + "\n\n" + brief.to_markdown(index=False, floatfmt=".4f") + "\n\n"
     md += f"[현장 전용 사례 검토: TP/TN/FP/FN]({case_review_path})\n\n"
-    md += "[현장 결과 읽기: 질문별 그래프와 해설](../onsite_figures/index.html)\n\n"
+    md += "[현장 결과 읽기: 질문별 그래프와 해설](../../export_review/onsite_figures/index.html)\n\n"
     md += "\n\n".join(f"![{Path(p).stem}]({p})" for p in plot_paths)
     md += "\n\n## H5\n\n" + outcome_table.to_markdown(index=False)
     md += "\n\n## FIGO\n\n" + annotation_table.to_markdown(index=False)
