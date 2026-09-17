@@ -56,7 +56,7 @@ class SurveyTests(unittest.TestCase):
 
 
 class AuditTests(unittest.TestCase):
-    def test_posthoc_refuses_existing_and_screened_destinations(self):
+    def test_posthoc_defaults_to_export_and_preserves_existing_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp) / "old/internal"
             save_json(run / "run_manifest.json", dict(config=dict(data_root=str(Path(tmp) / "source"))))
@@ -64,8 +64,8 @@ class AuditTests(unittest.TestCase):
                 build_existing(run, run.parent / "export_review/new_audit")
             result = build_existing(run)
             self.assertTrue(result.is_file())
-            with self.assertRaisesRegex(ValueError, "Output exists"):
-                build_existing(run)
+            self.assertEqual(result, run.parent / "export_review/visit_audit/index.html")
+            self.assertEqual(build_existing(run), result)
 
     def test_cap_is_not_convergence_and_early_stop_is_separate(self):
         row = budget_diagnosis(1000, 861, 1000, 150)

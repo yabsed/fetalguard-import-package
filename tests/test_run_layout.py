@@ -45,6 +45,8 @@ class RunLayoutTests(unittest.TestCase):
             journal = Path(latest["journal"])
             self.assertTrue((journal / "survey/summary.json").is_file())
             self.assertTrue(Path(latest["audit"]).is_file())
+            self.assertIn("export_review/visit_audit", latest["audit"])
+            self.assertNotIn("missing dependency", Path(latest["audit"]).read_text())
             self.assertIn("missing dependency", (journal / "failure.json").read_text())
             self.assertIn("stage_failed", (journal / "events.jsonl").read_text())
             lock.close.assert_not_called()

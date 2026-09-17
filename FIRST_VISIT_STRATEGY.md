@@ -9,7 +9,7 @@
 - `fg/survey.py`: 엄격 파서 전에 원천 파일·필드·연결·신호 품질·형식 변종 조사. `--survey-only`로 학습 환경 검사 없이 실행 가능. 파일 오류를 누적하며 조사한다. 원천 통계와 최종 학습 표본의 분모를 구분한다.
 - `fg/telemetry.py`: 실행 시도별 console/events/resources 일지. 사전검사 실패에도 보존하고, 단계·트리 fit·CNN epoch·재개·해시 소요 시간을 기록한다. CPU/RSS 및 장치 전체 GPU/VRAM/디스크를 주기 표본으로 수집한다. SIGKILL/전원 차단은 최종 요약을 보장하지 못한다.
 - `fg/cnn.py`, `fg/models.py`: 기존 수치 학습 절차를 유지하며 CNN 학습률/epoch 시간과 트리 실제 검증 이력을 추가한다. 트리는 완료 fit에서 이력을 저장하므로 중간 종료의 전체 반복 곡선까지 보존하지는 않는다.
-- `fg/visit_audit.py`: 내부 HTML/SVG 데이터 지도·종료 분류·학습 곡선·단계 비용, `training_diagnostics.csv`, `next_visit_plan.csv`, 기관 답변용 `questions.md`. `export_review/onsite_figures`에서 연결하지만 반출 집계에 넣지 않는다. 기존 결과는 `tools/build_visit_audit.py`로 재학습 없이 읽는다.
+- `fg/visit_audit.py`: 내부 상세 진단과 기관 답변용 기록을 보존한다. `fg/export_diagnostics.py`는 반출할 집계·학습 이력·시간·자원·준비표를 `export_review/visit_audit/`에 CSV·PNG·독립 HTML로 자동 생성한다. 기존 결과는 `tools/build_export_diagnostics.py` 또는 `tools/build_visit_audit.py`로 재학습 없이 추가한다.
 - **미구현/미확인:** 산모 수 learning curve, 추가 예산 실험 자동화, 검증된 측정 시각 기반 기간 분석, 임상적 단위/판독 합의/시점 가용성 확인. 값 분포만으로 이를 추정하지 않으며 준비표에 다음 행동으로 남긴다.
 
 ## 1. 이미 남는 정보와 부족한 정보
@@ -36,7 +36,7 @@
 3. **학습 예산 진단**: 각 후보의 train loss, validation AP, 최고 epoch, 실제 epoch, 학습률과 중단 원인을 같은 화면에 표시한다. 데이터 양에 따른 성능은 개발 코호트의 산모 단위 learning curve로 별도 측정한다.
 4. **다음 방문 의사결정표**: 관측 → 가능한 설명 → 이를 구별할 실험 → 바꿀 한 요소 → 예상 시간·필수 입력 → 성공/중단 기준 → 우선순위. 첫 방문에 얻은 근거 파일과 연결한다.
 
-권장 후속 구현은 원본/진단 로그를 `internal/visit_audit/`에 남기고, 읽기 쉬운 요약을 `export_review/onsite_figures/`에서 연결하는 것이다. 외부에서 2주 동안 사용할 집계 자료는 별도 선별/심사를 거쳐야 한다. 현장 로그를 통째로 반출할 수 있다고 전제하지 않는다. 재방문 때 재개할 내부 모델·체크포인트·ID 연결표의 보존 여부도 퇴실 전에 확인한다.
+외부에서 2주 동안 사용할 집계 자료는 `export_review/visit_audit/`에 자동 생성해 선별·심사 후보에 포함한다. 이 화면은 `internal/` 링크 없이 열리며 원천 품질·학습 종료·비용·다음 준비 근거를 제공한다. 원본 로그·모델·체크포인트·ID 연결표는 내부에서 보존하고 재방문 때의 재개 가능 여부를 퇴실 전에 확인한다.
 
 ## 3. saturation은 세 가지 질문으로 나눈다
 

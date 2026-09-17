@@ -2,7 +2,7 @@
 
 현장에서 사람이 결과를 읽을 때는 **`export_review/onsite_figures/index.html`**부터 연다. 질문별로 관련 지표를 묶은 그래프와 해설이 있으며, PNG/PDF를 직접 열 수도 있다. 세부 수치·개별 사례는 연결된 기존 보고서에서 확인한다. 새 실행의 생성 구조이며 기존 결과 디렉터리를 옮기지 않는다.
 
-이미지 형태의 그래프만 허용되는 경우 **`export_review/images/`의 PNG만 심사에 제출한다.** CSV를 제출하거나 표 전체를 스크린샷으로 바꿀 필요가 없다. 이 폴더에는 선별된 집계값을 새로 그린 그래프만 들어 있다. 실제 허용 범위는 기관 심사로 확정한다.
+반출 검토용 방문 진단·학습곡선·추가 집계는 **`export_review/visit_audit/index.html`**에서 확인한다. 이미지 심사는 **`export_review/images/`와 `export_review/visit_audit/images/`의 PNG**, CSV 심사는 각 폴더의 `csv/`를 사용한다. 실제 허용 범위는 기관 심사로 확정한다.
 
 파일 확장자와 함께 **내용과 생성 경로**를 확인한다. 개별 파형·개인별 예측을 이미지로 저장했다고 반출 가능한 것은 아니다.
 
@@ -20,6 +20,10 @@
 │   │   └── attempts/           # 결과 루트 visits/의 이번/이전 일지 참조
 │   └── report/report.html · case_review.html · case_review.csv · case_*.png
 └── export_review/               # 현장 검토·심사 준비 자료
+    ├── visit_audit/             # 반출 검토용 방문·학습·데이터 추가 집계
+    │   ├── index.html · summary.json · questions.md · EXPORT_MANIFEST.json
+    │   ├── csv/                # 후보별 진단·이력·시간·자원·데이터·보정·집계 SHAP
+    │   └── images/             # 집계표·전 학습 후보 곡선 PNG, 이미지 심사 후보
     ├── onsite_figures/          # 비선별 현장 전용: 반출 후보가 아님
     │   └── index.html · *.png · *.pdf · README.md · manifest.json
     ├── csv/                     # 선별 집계 CSV 전체
@@ -38,6 +42,10 @@
 실행 ID가 만들어지기 전의 환경/파싱 실패도 보존하도록, 결과 루트에는 별도로 `visits/<방문ID>/internal/visit_audit/`가 생긴다. `survey/`에 원천 조사 CSV·이슈·JSON 요약, 상위에 `events.jsonl`, `console.log`, `resources.jsonl`, 상태·실패 기록이 있다. 조사만 실행했거나 사전검사에서 실패하면 이곳의 `index.html`을 연다. 최신 위치는 `LATEST_VISIT.json`을 따른다. 정상 분석은 `LATEST.json`에도 `visit_audit` 링크를 제공한다. 원천 CSV/로그는 ID·경로를 포함할 수 있어 **반출 심사 집계와 별개**다. 결과를 보존할 때 분석 폴더만이 아니라 `visits/`도 함께 유지한다.
 
 `internal/visit_audit/index.html`에는 원천 ID 연결 그래프, 기관 코드별 보간 전 FHR 0 비율, 후보별 상한/patience 상태와 학습 곡선, 완료 단계 소요 시간, 다음 방문 준비표가 있다. CNN 전체와 상한 도달 트리 최대 12개의 곡선을 화면에 표시하고 모든 후보의 원본 이력 위치를 CSV에 남긴다. 학습 loss와 validation 지표는 독립 축이다. 기존 결과의 미수집 이력/자원은 새로 만들어내지 않는다. 산모 수 learning curve는 미실행으로 표시한다.
+
+위 자료 중 반출할 만한 항목은 `export_review/visit_audit/`에도 자동 생성한다. 기관은 S01 등의 별칭, 학습 후보는 J0001 등의 번호와 허용된 모델 이름으로 표시한다. 검증 가능한 산모 분모로 작은 집단을 억제하며, 모든 후보의 곡선과 전체 반복 이력 CSV를 수록한다. 점수 분포·혼동행렬·보정·ROC/PR·기관별 성능·하위군·순위별 평균 SHAP도 개별 예측에서 집계한다. 원본 파일·모델·개별 파형·개별 예측·개별 SHAP·자유문 일지·작성한 기관 답변은 복사하지 않는다. `questions.md`는 고정된 빈 질문 양식이다.
+
+기존 결과는 `python -B tools/build_export_diagnostics.py /결과/full-실행해시`로 추가한다. 기본 `visit_audit`가 이미 완성돼 있으면 검증·재사용하고, 최신 입력으로 새로 만들려면 `--name visit_audit_v2`를 지정한다. 추가 묶음은 자체 `EXPORT_MANIFEST.json`을 사용하고 `validate_run.py`가 함께 검사하므로 기존 실험·기존 반출 묶음 해시를 다시 쓰지 않는다. 재개 방문의 자동 진단도 접미어를 붙여 보존하며 `LATEST_VISIT.json`과 `LATEST.json.visit_audit`에서 최신 화면을 연다.
 
 | 구분 | 내부 전용 `internal/` | 선별 집계 (`export_review/onsite_figures/` 제외) |
 |---|---|---|

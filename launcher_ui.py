@@ -48,7 +48,7 @@ def launch():
                 code = process.wait()
                 status.value = ("데이터 조사 완료 — 결과 폴더의 LATEST_VISIT.json에 보고서 위치가 있습니다. 학습 없음." if survey_only else
                     "사전검사 완료 — 학습은 실행하지 않았습니다." if check_only else
-                    "완료 — export_review/onsite_figures/index.html에서 결과를 읽으세요. 첫 방문 진단은 internal/visit_audit/index.html, 심사 후보는 export_review/images/입니다.") if code == 0 else f"중단/실패 (exit {code}). LATEST_VISIT.json의 내부 일지/진단을 확인하세요. 완료된 학습은 재실행 시 재사용됩니다."
+                    "완료 — 반출용 방문 진단은 export_review/visit_audit/index.html입니다. 성능 이미지는 export_review/images/, 추가 진단·학습곡선은 visit_audit/images/에서 검토하세요. 재개 후 최신 화면은 LATEST_VISIT.json에 기록됩니다.") if code == 0 else f"중단/실패 (exit {code}). LATEST_VISIT.json의 반출용 진단과 내부 일지를 확인하세요. 완료된 학습은 재실행 시 재사용됩니다."
             except Exception as exc:
                 log.value += str(exc)
                 status.value = "실행 실패"

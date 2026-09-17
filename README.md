@@ -6,7 +6,7 @@
 
 이미 끝난 실행에는 `python -B tools/build_onsite_figures.py /결과/full-실행해시`로 **재학습 없이** 추가한다. 새 schema 3 실행에서는 `export_review/`에 생성하고, 과거 실행에는 기존 레이아웃을 보존해 `internal/`에 추가한다. 기존 폴더가 있으면 `--name onsite_figures_v2`처럼 새 이름을 지정한다. 이 자료는 개별 구간 SHAP·원 사이트 코드·실제 값 범위를 포함하는 현장 전용이며, `export_review` 안에 있어도 선별된 반출 후보가 아니다.
 
-첫 방문에서 무엇을 조사하고 두 번째 방문의 실험을 어떻게 결정할지는 [FIRST_VISIT_STRATEGY.md](FIRST_VISIT_STRATEGY.md)에 정리했다. 이제 **학습 전 원천 조사 → 기존 실험 → 학습 종료/비용 진단 → 다음 방문 준비표**를 자동 생성한다. 시작 페이지는 `internal/visit_audit/index.html`이며 현장 그림 페이지에서도 연결된다. 로그·원천 통계는 내부 전용이고 반출 선별 대상에 자동 포함되지 않는다.
+첫 방문에서 무엇을 조사하고 두 번째 방문의 실험을 어떻게 결정할지는 [FIRST_VISIT_STRATEGY.md](FIRST_VISIT_STRATEGY.md)에 정리했다. **반출 검토용 방문 진단은 `export_review/visit_audit/index.html`에서 연다.** 원천 구성·연결·결측·기관별 집계, 혼동행렬·보정·고정 임계값 ROC/PR, 집계 SHAP 방향, 모든 학습 후보의 종료 진단·반복 이력·곡선, 실행 시간·자원·다음 방문 준비표를 CSV·PNG·HTML로 생성한다. 개별 신호·예측·식별자·원본 경로·가중치·자유문 로그와 작성한 기관 답변은 `internal/`에 보존한다.
 
 ## 첫 방문 조사와 실행 일지
 
@@ -30,19 +30,21 @@ bash 본선/02-반입할-파일/RUN.sh \
 
 원천 통계는 **전체 파일/원천 구간** 기준이므로 중복 배포·두 태아가 포함될 수 있다. 최종 학습의 선택 태아·산모·제외 후 구간과 분모가 다르다. 파일 연결은 분석 적격 판정이 아니다. 출생일을 측정 시각으로 대용하지 않으며 라벨/단위/0의 의미는 기관에 확인한다.
 
-Ctrl+C 및 지원되는 환경의 SIGTERM에서는 실패/중단 요약을 생성한다. 전원 차단·SIGKILL에서는 이미 저장한 일지와 마지막 체크포인트만 남고 최종 상태가 `running`으로 남을 수 있다. 결과 루트 전체(특히 `visits/`)를 내부에 보존해야 진단의 상대 링크가 유지된다. 진단 페이지는 재개 시 갱신하는 뷰이며 실험 완료 해시나 선별 집계에 포함하지 않는다.
+Ctrl+C 및 지원되는 환경의 SIGTERM에서는 실패/중단 요약과 반출용 진단을 생성한다. 전원 차단·SIGKILL에서는 이미 저장한 일지와 마지막 체크포인트만 남고 최종 상태가 `running`으로 남을 수 있다. 결과 루트 전체(특히 `visits/`)를 내부에 보존해야 상세 진단 근거가 유지된다. 반출용 진단은 내부 링크 없이 독립적으로 열린다. 재개 시 `visit_audit_002`처럼 새 스냅샷을 만들며 `LATEST_VISIT.json`이 최신 반출용 화면을 가리킨다. 조사만 실행한 경우에도 `visits/<방문ID>/export_review/visit_audit/`에 CSV·HTML을 생성한다.
 
 기존 실행의 이력으로 **재학습 없이** 진단만 만들 수도 있다. 원천 조사를 다시 수행하지 않으며 과거에 기록하지 않은 트리 이력·자원 로그는 미수집으로 표시한다.
 
 ```bash
-python -B tools/build_visit_audit.py /결과/full-실행해시
-# 기존 진단/담당자 답변을 보존하려면 새 이름 또는 새 외부 출력 경로 사용
-python -B tools/build_visit_audit.py /결과/full-실행해시 --name visit_audit_v2
+python -B tools/build_export_diagnostics.py /결과/full-실행해시
+# 새 진단 스냅샷을 추가하려면
+python -B tools/build_export_diagnostics.py /결과/full-실행해시 --name visit_audit_v2
 ```
+
+`tools/build_visit_audit.py`도 기본 출력이 `export_review/visit_audit/`다. 기존 심사 묶음·학습 결과의 해시는 보존하고 추가 집계는 자체 `EXPORT_MANIFEST.json`으로 검증한다. 같은 출력 이름의 완성본은 검증 후 재사용한다. `--output`을 명시한 이전 방식은 상세 내부용 보고서 생성용이다.
 
 산모 수 learning curve와 추가 예산 학습은 **아직 자동 실행하지 않는다**. 데이터 양 포화는 미측정으로 표시한다. 이번 변경은 실험 예산·분할·모델 선택 규칙을 바꾸지 않으며 test 성능으로 연장 후보를 정하지 않는다.
 
-**그래프 이미지만 반출 심사에 제출할 경우:** 실행 후 **`export_review/images/`의 PNG만** 선택한다. 주 성능·차이·CI부터 인자 설명, CNN·EMR·LOSO·아웃컴까지 28개 집계 영역을 페이지별 고해상도 그래프로 만든다. CSV·HTML·JSON·PDF는 이 이미지 폴더에 들어가지 않는다. 이미지도 승인 전 심사 후보이며, 개별 파형·개인별 예측은 포함하지 않는다. 상세 구성은 [OUTPUTS.md](OUTPUTS.md)에 있다.
+**이미지 반출 심사 후보:** 기존 성능 집계는 **`export_review/images/`**, 추가 진단·학습곡선은 **`export_review/visit_audit/images/`**의 PNG다. CSV·HTML·JSON은 각각의 상위 검토 폴더에 둔다. CSV 반출 검토가 가능하면 `export_review/csv/`와 `export_review/visit_audit/csv/`를 사용한다. 상세 구성은 [OUTPUTS.md](OUTPUTS.md)에 있다.
 
 기존 분석을 재학습하지 않고 그래프를 추가하려면 `python -B tools/build_image_review.py /결과/full-실행해시`를 실행한다. 별도로 생성된 **`image_review/images/`**가 이미지 전용 심사 폴더다.
 

@@ -14,6 +14,9 @@ from run import acquire_lock
 
 
 def build_existing(path, output=None, name="visit_audit"):
+    if output is None:
+        from tools.build_export_diagnostics import build_existing as build_review
+        return build_review(path, name)
     supplied = Path(path).resolve()
     internal = supplied / "internal" if (supplied / "internal").is_dir() else supplied
     manifest = internal / "run_manifest.json"
@@ -35,10 +38,10 @@ def build_existing(path, output=None, name="visit_audit"):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="저장된 이력으로 첫 방문 진단 생성: 학습/원천 재조사 없음")
+    parser = argparse.ArgumentParser(description="저장된 이력으로 반출 검토용 방문 진단 생성: 기본 export_review/visit_audit/")
     parser.add_argument("run", type=Path)
     parser.add_argument("--name", default="visit_audit")
-    parser.add_argument("--output", type=Path, help="기존 결과 밖의 새 내부용 폴더도 가능")
+    parser.add_argument("--output", type=Path, help="명시할 때만 상세 내부용 진단을 지정 폴더에 생성")
     args = parser.parse_args()
     print(build_existing(args.run, args.output, args.name))
 

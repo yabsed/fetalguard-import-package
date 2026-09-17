@@ -9,6 +9,7 @@ import hashlib
 import html
 import math
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -471,7 +472,7 @@ def write_review_report(out, tables, profile, image_files=()):
     """No arbitrary HTML/links/labels from the internal report are accepted."""
     title = "MOCK — 반출 심사용 집계 결과 (학술 결론 금지)" if profile == "mock" else "반출 심사용 집계 결과 — 기관 승인 전"
     notes = ["이 묶음은 반출 승인이 아닙니다. 수신 기관의 검토가 완료될 때까지 현장에 보관하세요.",
-             "CSV는 csv/에 모았습니다. onsite_figures/가 있으면 현장 이해용 자료이며 개별 SHAP·원 기관 코드 등을 포함합니다. 반출 후보는 images/의 선별된 PNG입니다. 상위 폴더 전체를 제출하지 마세요.",
+             "기존 집계 CSV는 csv/, 추가 데이터·학습·방문 진단 CSV는 visit_audit/csv/에 있습니다. 이미지 후보는 images/와 visit_audit/images/입니다. onsite_figures/는 개별 SHAP·원 기관 코드가 있는 현장용입니다.",
              "작거나 확인되지 않은 산모 수/양성·음성 산모 수의 집계는 억제됩니다. 기준을 통과해도 기관의 반출 기준 충족을 보장하지 않습니다.",
              "표의 공란은 미산출 또는 억제이며 0이 아닙니다. 작은 셀은 다른 표와의 차분으로 추론될 수도 있어 기관 검토가 필요합니다.",
              "산모 군집 부트스트랩 신뢰구간은 고정된 모델의 표본 불확실성입니다. 0을 포함하는 차이는 동등성의 증명이 아닙니다.",
@@ -547,6 +548,7 @@ def write_review_report(out, tables, profile, image_files=()):
         markdown.append(f"[CSV](csv/{name}.csv)")
         markdown.append(frame.to_markdown(index=False, floatfmt=".5g") if len(frame.columns) else "Not available")
     markup.append("</html>")
+    markup.insert(-1, "<p><a href='visit_audit/index.html'>반출 검토용 추가 집계 · 학습곡선 · 방문 진단</a> (실행 일지 종료 시 생성)</p>")
     (out / "report.html").write_text("\n".join(markup), encoding="utf-8")
     (out / "report.md").write_text("\n\n".join(markdown) + "\n", encoding="utf-8")
     return [out / "report.html", out / "report.md"] + figure_files
@@ -610,17 +612,39 @@ def run_export_review(run, out, cfg):
     out = Path(out)
     if out.is_symlink() or any(p.is_symlink() for p in out.parents):
         raise ValueError("Symbolic-link export destinations are not accepted")
+    diagnostics = []
     if out.exists() and any(out.iterdir()):
         # A crash after atomic rename but before the stage marker is recoverable.
-        validate_review_bundle(out)
-        return
+        if (out / "EXPORT_MANIFEST.json").is_file():
+            validate_review_bundle(out)
+            return
+        # A diagnostic-only visit may precede the first completed analysis.
+        from .export_diagnostics import DIRECTORY, validate_diagnostics
+        for directory in out.iterdir():
+            if not directory.is_dir() or not DIRECTORY.fullmatch(directory.name):
+                raise ValueError("Incomplete export bundle contains unexpected files")
+            validate_diagnostics(directory)
+            diagnostics.append(directory)
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".export-review-build-", dir=Path(run)) as temporary:
         staged = Path(temporary) / "bundle"
         _build_export_review(run, staged, cfg)
+        for directory in diagnostics:
+            shutil.copytree(directory, staged / directory.name)
+        validate_review_bundle(staged)
+        backup = None
         if out.exists():
-            out.rmdir()  # Only the pre-created EMPTY stage directory can be removed.
-        staged.replace(out)
+            if diagnostics:
+                backup = Path(temporary) / "previous_diagnostics"
+                out.replace(backup)
+            else:
+                out.rmdir()  # Only the pre-created EMPTY stage directory can be removed.
+        try:
+            staged.replace(out)
+        except BaseException:
+            if backup is not None:
+                backup.replace(out)
+            raise
 
 
 EXPORT_TABLES = {"model_comparison", "paired_comparisons", "cohort_counts", "cv_summary", "validation_selection",
@@ -643,6 +667,14 @@ def validate_review_bundle(out):
     manifest = read_json(root / "EXPORT_MANIFEST.json")
     schema = manifest.get("schema_version", 1)
     onsite = {}
+    diagnostics = {}
+    from .export_diagnostics import DIRECTORY, validate_diagnostics
+    for directory in root.iterdir():
+        if directory.is_dir() and DIRECTORY.fullmatch(directory.name):
+            diagnostics[directory.name] = validate_diagnostics(directory)
+    # Additive screened supplements have their own immutable inventories.
+    # This also supports adding diagnostics to a completed schema 1/2 run.
+    actual = {name for name in actual if name.split("/")[0] not in diagnostics}
     if schema == 3:
         if (manifest.get("manifest_scope") != "screened_aggregates_only"
                 or manifest.get("csv_directory") != "csv"
@@ -684,10 +716,10 @@ def validate_review_bundle(out):
             for key, value in attrs:
                 allowed_images = {name for name in actual if name.startswith("images/") and IMAGE_NAME.fullmatch(name.removeprefix("images/"))}
                 allowed_images |= {"figures/model_comparison.png", "figures/feature_response_training.png"}
-                allowed_links = allowed_images | {name for name in actual if name.startswith("csv/") and name.endswith(".csv")}
+                allowed_links = allowed_images | {name for name in actual if name.startswith("csv/") and name.endswith(".csv")} | {"visit_audit/index.html"}
                 if key.startswith("on") or (key == "src" and value not in allowed_images) or (key == "href" and value not in allowed_links):
                     raise ValueError("Unexpected link in aggregate review report")
 
     Links().feed((root / "report.html").read_text(encoding="utf-8"))
     return {"status": "validated_pending_institution_review", "files": len(actual), "manifest_hashes_match": True,
-            "onsite_only": onsite, "whole_directory_exportable": False}
+            "onsite_only": onsite, "screened_diagnostics": diagnostics, "whole_directory_exportable": False}

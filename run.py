@@ -229,7 +229,8 @@ def execute(args, cfg, visit):
     write_json(output / "LATEST.json", {"run": str(run_root), "internal": str(run),
         "report": str(run / "report/report.html"), "export_review": str(run_root / "export_review"),
         "onsite_figures": str(run_root / "export_review/onsite_figures/index.html"),
-        "visit_audit": str(run / "visit_audit/index.html"),
+        "visit_audit": str(run_root / "export_review/visit_audit/index.html"),
+        "internal_visit_audit": str(run / "visit_audit/index.html"),
         "export_report": str(run_root / "export_review/report.html"),
         "export_images": str(run_root / "export_review/images"), "export_status": "pending_institution_review"})
     from fg.evaluation import create_splits
@@ -268,7 +269,7 @@ def execute(args, cfg, visit):
                         "finished": datetime.now(timezone.utc).isoformat()})
     note(f"SUCCESS — 현장 보고서: {run / 'report/report.html'}")
     note(f"현장 이해용 그래프: {run_root / 'export_review/onsite_figures/index.html'}")
-    note(f"첫 방문 진단·다음 방문 준비표: {run / 'visit_audit/index.html'}")
+    note("반출용 방문 진단·학습곡선은 실행 일지 종료 후 export_review/visit_audit/에 생성합니다.")
     note(f"반출 심사용 집계 결과 (승인 전): {run_root / 'export_review/report.html'}")
     note(f"이미지 전용 심사 폴더 (PNG만): {run_root / 'export_review/images'}")
 

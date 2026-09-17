@@ -513,9 +513,8 @@ class Guide:
             markup.append("<p><strong>MOCK — 실행 검사 결과입니다. 성능을 연구 결론으로 사용하지 마세요.</strong></p>")
         if cfg.get("analysis_role"):
             markup.append(f"<p class='meta'>{html.escape(cfg['analysis_role'])}</p>")
-        if (self.run / "visit_audit/index.html").is_file():
-            relative = Path(os.path.relpath(self.run / "visit_audit/index.html", self.link_base)).as_posix()
-            markup.append(f"<p><a href='{html.escape(quote(relative), quote=True)}'>첫 방문 데이터 지도 · 학습 종료 진단 · 다음 방문 준비표 (내부용)</a></p>")
+        relative = Path(os.path.relpath(self.run.parent / "export_review/visit_audit/index.html", self.link_base)).as_posix()
+        markup.append(f"<p><a href='{html.escape(quote(relative), quote=True)}'>반출 검토용 데이터 지도 · 학습 종료 진단 · 다음 방문 준비표</a></p>")
         for path, label in [("report.html", "전체 수치·분석 보고서"), ("case_review.html", "TP/TN/FP/FN 실제 파형 사례")]:
             if (self.run / "report" / path).exists():
                 relative = Path(os.path.relpath(self.run / "report" / path, self.link_base)).as_posix()

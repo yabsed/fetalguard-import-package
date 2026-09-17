@@ -222,6 +222,9 @@ class ExportReviewTests(unittest.TestCase):
         run_export_review(self.internal, self.out, self.cfg)
         manifest_file = self.out / "EXPORT_MANIFEST.json"
         original = manifest_file.read_bytes()
+        from fg.export_diagnostics import build_export_diagnostics
+        build_export_diagnostics(self.internal, self.out / "visit_audit", self.cfg, images=False)
+        self.assertIn("visit_audit", validate_review_bundle(self.out)["screened_diagnostics"])
         guide = self.out / "onsite_figures"
         guide.mkdir()
         (guide / "index.html").write_text(self.secret)

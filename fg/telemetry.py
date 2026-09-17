@@ -155,8 +155,34 @@ class Visit:
 
     def pointer(self, status):
         destination = self.run / "visit_audit" if self.run else self.path
+        review = getattr(self, "review_index", None)
         save_json(self.output / "LATEST_VISIT.json", dict(visit_id=self.id, status=status, mode=self.mode,
-                  audit=str(destination / "index.html"), journal=str(self.path), scope="internal_only"))
+                  audit=str(review or destination / "index.html"), internal_audit=str(destination / "index.html"),
+                  export_audit=str(review) if review else None, journal=str(self.path),
+                  scope="review_and_internal_separated" if review else "internal_only"))
+
+    def export_diagnostics(self):
+        from .export_diagnostics import build_export_diagnostics
+        # Do not occupy a not-yet-built primary bundle after --check or a failed
+        # early stage: run_export_review publishes that directory atomically.
+        primary_ready = self.run is not None and (self.run.parent / "export_review/EXPORT_MANIFEST.json").is_file()
+        root = self.run.parent if primary_ready and self.mode == "analysis" else self.path.parent.parent
+        out = root / "export_review/visit_audit"
+        # Every invocation gets an immutable snapshot; retain previous visit evidence.
+        index = 2
+        while out.exists():
+            out = root / "export_review" / f"visit_audit_{index:03d}"
+            index += 1
+        self.review_index = build_export_diagnostics(self.run, out, self.cfg, attempt=self.path,
+            images=self.mode == "analysis" and self.run is not None)
+        latest = self.output / "LATEST.json"
+        if self.mode == "analysis" and latest.is_file() and self.run is not None:
+            value = json.loads(latest.read_text(encoding="utf-8"))
+            if value.get("internal") == str(self.run):
+                value["visit_audit"] = str(self.review_index)
+                value["internal_visit_audit"] = str(self.run / "visit_audit/index.html")
+                save_json(latest, value)
+        print(f"반출 검토용 데이터·학습·방문 진단: {self.review_index}", flush=True)
 
     def refresh(self):
         try:
@@ -201,6 +227,14 @@ class Visit:
             save_json(self.path / "status.json", dict(status=status, finished=stamp(),
                       seconds=time.monotonic() - self.started, run=str(self.run) if self.run else None))
             self.refresh()
+            try:
+                self.export_diagnostics()
+            except Exception as exc:
+                save_json(self.path / "export_diagnostics_failure.json", dict(type=type(exc).__name__, error=str(exc)))
+                print(f"반출용 진단 생성 실패: {type(exc).__name__}. 내부 일지에서 원인을 확인하세요.", file=sys.stderr)
+                if error is None:
+                    self.pointer("export_diagnostics_failed")
+                    raise
             self.pointer(status)
         finally:
             if self.run_lock is not None:
