@@ -1,0 +1,32 @@
+CNN·공식 딥러닝 모델·사전 데이터 조사·audit/반출 산출물을 만들지 않고
+핵심 분석만 바로 실행하는 명령어입니다.
+
+아래 명령어의 /data/path와 /result/path를 실제 경로로 바꾸세요.
+
+Linux / macOS
+---------------
+python -B run.py --core-only --data "/data/path" --output "/result/path" --profile full --device cpu
+
+Windows CMD / PowerShell
+------------------------
+python -B run.py --core-only --data "C:\data\path" --output "C:\result\path" --profile full --device cpu
+
+실행하는 항목
+---------------
+- 원천 파일 발견·입력 해시
+- 데이터 정제·인자 추출
+- 산모 단위 train/validation/test 분할
+- 실험 A(CatBoost, XGBoost, 로지스틱 및 인자 비교)
+- 부가 분석
+- internal/report/report.html 내부 보고서
+
+생략하는 항목
+---------------
+- 사전 survey-only 조사
+- CNN 학습(실험 B)
+- 공식 XGBoost/YOLO 참조 모델
+- visit audit·반출 심사 묶음·onsite figures
+
+이 모드는 의도적으로 일부 분석을 생략하므로 status.json은 complete_with_issues로
+남을 수 있습니다. 핵심 분석 종료 여부는 internal/pipeline_status.json의 data,
+splits, experiment_a, supplementary, report 상태로 확인하세요.

@@ -133,6 +133,18 @@ class AuditTests(unittest.TestCase):
             self.assertIn("journal console test", (visit.path / "console.log").read_text())
             self.assertTrue((visit.path / "index.html").is_file())
 
+    def test_core_only_keeps_log_without_rendering_audit(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("fg.telemetry.resource_sample", return_value=dict(process_cpu_seconds=0)):
+            visit = Visit(tmp, dict(profile="full", audit=False), interval=15, mode="core_only")
+            with visit:
+                print("core-only log")
+            latest = json.loads((Path(tmp) / "LATEST_VISIT.json").read_text())
+            self.assertEqual(visit.path.name, "run_log")
+            self.assertEqual(latest["scope"], "log_only")
+            self.assertIsNone(latest["audit"])
+            self.assertFalse((visit.path / "index.html").exists())
+            self.assertIn("core-only log", (visit.path / "console.log").read_text())
+
 
 class TreeHistoryTests(unittest.TestCase):
     def test_actual_tree_iterations_are_logged_and_resume_does_not_rewrite(self):

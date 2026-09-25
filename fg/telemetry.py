@@ -113,8 +113,10 @@ class Visit:
     def __init__(self, output, cfg, interval=15, mode="analysis"):
         self.output, self.cfg = Path(output), cfg
         self.mode = mode
+        self.audit_enabled = cfg.get("audit", True)
         self.id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
-        self.path = self.output / "visits" / self.id / "internal" / "visit_audit"
+        leaf = "visit_audit" if self.audit_enabled else "run_log"
+        self.path = self.output / "visits" / self.id / "internal" / leaf
         self.path.mkdir(parents=True)
         self.interval, self.stage, self.run, self.run_lock = interval, None, None, None
         self.stop = threading.Event()
@@ -148,20 +150,25 @@ class Visit:
 
     def attach(self, run):
         self.run = Path(run)
-        save_json(self.run / "visit_audit/attempts" / (self.id + ".json"),
-                  dict(visit_id=self.id, path=os.path.relpath(self.path, self.run / "visit_audit")))
+        leaf = "visit_audit" if self.audit_enabled else "run_log"
+        save_json(self.run / leaf / "attempts" / (self.id + ".json"),
+                  dict(visit_id=self.id, path=os.path.relpath(self.path, self.run / leaf)))
         self.emit("run_attached", run=str(self.run))
         self.pointer("running")
 
     def pointer(self, status):
-        destination = self.run / "visit_audit" if self.run else self.path
+        leaf = "visit_audit" if self.audit_enabled else "run_log"
+        destination = self.run / leaf if self.run else self.path
         review = getattr(self, "review_index", None)
         save_json(self.output / "LATEST_VISIT.json", dict(visit_id=self.id, status=status, mode=self.mode,
-                  audit=str(review or destination / "index.html"), internal_audit=str(destination / "index.html"),
+                  audit=str(review or destination / "index.html") if self.audit_enabled else None,
+                  internal_audit=str(destination / "index.html") if self.audit_enabled else None,
                   export_audit=str(review) if review else None, journal=str(self.path),
-                  scope="review_and_internal_separated" if review else "internal_only"))
+                  scope="review_and_internal_separated" if review else "internal_only" if self.audit_enabled else "log_only"))
 
     def export_diagnostics(self):
+        if not self.audit_enabled:
+            return
         from .export_diagnostics import build_export_diagnostics
         # Do not occupy a not-yet-built primary bundle after --check or a failed
         # early stage: run_export_review publishes that directory atomically.
@@ -185,6 +192,8 @@ class Visit:
         print(f"반출 검토용 데이터·학습·방문 진단: {self.review_index}", flush=True)
 
     def refresh(self):
+        if not self.audit_enabled:
+            return
         try:
             from .visit_audit import build_visit_audit
             build_visit_audit(self.run, self.run / "visit_audit" if self.run else self.path, attempt=self.path)

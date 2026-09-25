@@ -42,7 +42,11 @@ def config_args():
     parser.add_argument("--prior-cohort", type=Path, help="이미 분석한 산모 mother_id CSV. 해당 산모는 train에만 포함")
     parser.add_argument("--check", action="store_true", help="환경·모델·데이터 디렉토리 검증만")
     parser.add_argument("--survey-only", action="store_true", help="학습·GPU 검사 없이 원천 구조/품질 조사만 (내부용)")
+    parser.add_argument("--core-only", action="store_true",
+                        help="사전 조사·CNN·공식 딥러닝 모델·audit/반출 산출물 없이 핵심 분석만 실행")
     args = parser.parse_args()
+    if args.core_only and (args.check or args.survey_only):
+        parser.error("--core-only는 --check/--survey-only와 함께 사용할 수 없습니다.")
     cfg = json.loads(args.config.read_text(encoding="utf-8-sig"))
     for key in ("profile", "device", "threads"):
         if getattr(args, key) is not None:
@@ -75,6 +79,10 @@ def config_args():
             parser.error("Prior cohort CSV does not exist")
         cfg["prior_cohort_sha256"] = file_sha256(cfg["prior_cohort_file"])
     from fg.protocol import DESIGN_VERSION
+    if args.core_only:
+        cfg.update(core_only=True, audit=False, cnn=False, official_models=False)
+    else:
+        cfg.update(core_only=False, audit=True)
     cfg["design_version"] = DESIGN_VERSION
     cfg["budget"] = cfg["profiles"][cfg["profile"]]
     return args, cfg
@@ -96,7 +104,11 @@ def preflight(cfg):
     if sys.version_info < (3, 10):
         raise RuntimeError("Python 3.10 이상이 필요합니다. 신청한 PyTorch 커널을 선택하세요.")
     mods = {"numpy": "numpy", "pandas": "pandas", "scipy": "scipy", "scikit-learn": "sklearn", "catboost": "catboost",
-            "xgboost": "xgboost", "torch": "torch", "matplotlib": "matplotlib", "pillow": "PIL", "opencv": "cv2", "tabulate": "tabulate"}
+            "xgboost": "xgboost", "matplotlib": "matplotlib", "pillow": "PIL", "tabulate": "tabulate"}
+    if cfg["cnn"] or cfg["official_models"]:
+        mods["torch"] = "torch"
+    if cfg["official_models"]:
+        mods["opencv"] = "cv2"
     versions, missing = {}, []
     for name, module in mods.items():
         try:
@@ -106,20 +118,25 @@ def preflight(cfg):
             missing.append(f"{name}: {exc}")
     if missing:
         raise RuntimeError("환경 사전검사 실패. 자동 설치하지 않습니다:\n" + "\n".join(missing))
-    import torch
-    import numpy as np
-    torch.set_num_threads(cfg["threads"])
-    torch.from_numpy(np.zeros((2, 3), np.float32)).numpy()
-    if cfg["device"] == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA requested but unavailable. config device=cpu 또는 auto로 변경하세요.")
-    cfg["resolved_device"] = "cuda" if cfg["device"] == "cuda" or (cfg["device"] == "auto" and torch.cuda.is_available()) else "cpu"
-    torch.backends.cudnn.benchmark = False
-    torch.use_deterministic_algorithms(True)
+    torch = None
+    if cfg["cnn"] or cfg["official_models"]:
+        import torch
+        import numpy as np
+        torch.set_num_threads(cfg["threads"])
+        torch.from_numpy(np.zeros((2, 3), np.float32)).numpy()
+        if cfg["device"] == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA requested but unavailable. config device=cpu 또는 auto로 변경하세요.")
+        cfg["resolved_device"] = "cuda" if cfg["device"] == "cuda" or (cfg["device"] == "auto" and torch.cuda.is_available()) else "cpu"
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True)
+    else:
+        cfg["resolved_device"] = "cpu"
     if cfg["official_models"]:
         from fg.official import preflight_models
         preflight_models(PACKAGE, cfg)
     return dict(python=sys.version, platform=platform.platform(), packages=versions, device=cfg["resolved_device"],
-                cuda=torch.version.cuda, gpu=torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)
+                cuda=torch.version.cuda if torch is not None else None,
+                gpu=torch.cuda.get_device_name(0) if torch is not None and torch.cuda.is_available() else None)
 
 
 def run_stage(run, name, action, *, target=None):
@@ -186,7 +203,8 @@ def main():
                       OPENBLAS_NUM_THREADS=str(cfg["threads"]), MPLCONFIGDIR=str(output / ".matplotlib"),
                       CUBLAS_WORKSPACE_CONFIG=":4096:8")
     from fg.telemetry import Visit
-    mode = "survey_only" if getattr(args, "survey_only", False) else "check_only" if args.check else "analysis"
+    mode = ("survey_only" if getattr(args, "survey_only", False) else "check_only" if args.check else
+            "core_only" if cfg.get("core_only") else "analysis")
     with Visit(output, cfg, mode=mode) as visit:
         return execute(args, cfg, visit)
 
@@ -200,10 +218,13 @@ def execute(args, cfg, visit):
     with scope("package_verification"):
         bundle_hash = verify_package()
     emit("package_verified", package_sha256=bundle_hash)
-    note(f"학습 전 데이터 조사 · 실행 일지: {visit.path}")
-    with scope("source_survey"):
-        run_survey(Path(cfg["data_root"]), visit.path / "survey")
-    visit.refresh()
+    if cfg.get("core_only"):
+        note("핵심 분석 모드: 사전 조사·CNN·공식 딥러닝 모델·audit/반출 산출물 생략")
+    else:
+        note(f"학습 전 데이터 조사 · 실행 일지: {visit.path}")
+        with scope("source_survey"):
+            run_survey(Path(cfg["data_root"]), visit.path / "survey")
+        visit.refresh()
     if getattr(args, "survey_only", False):
         note(f"SURVEY OK — 학습 없음. 조사 보고서: {visit.path / 'index.html'}")
         return
@@ -232,13 +253,19 @@ def execute(args, cfg, visit):
     if args.check:
         note("CHECK OK — 학습은 실행하지 않았습니다.")
         return
-    write_json(output / "LATEST.json", {"run": str(run_root), "internal": str(run),
-        "report": str(run / "report/report.html"), "export_review": str(run_root / "export_review"),
-        "onsite_figures": str(run_root / "export_review/onsite_figures/index.html"),
-        "visit_audit": str(run_root / "export_review/visit_audit/index.html"),
-        "internal_visit_audit": str(run / "visit_audit/index.html"),
-        "export_report": str(run_root / "export_review/report.html"),
-        "export_images": str(run_root / "export_review/images"), "export_status": "pending_institution_review"})
+    latest = {"run": str(run_root), "internal": str(run), "report": str(run / "report/report.html")}
+    if cfg.get("audit", True):
+        latest.update(export_review=str(run_root / "export_review"),
+            onsite_figures=str(run_root / "export_review/onsite_figures/index.html"),
+            visit_audit=str(run_root / "export_review/visit_audit/index.html"),
+            internal_visit_audit=str(run / "visit_audit/index.html"),
+            export_report=str(run_root / "export_review/report.html"),
+            export_images=str(run_root / "export_review/images"), export_status="pending_institution_review")
+    else:
+        latest.update(export_review=None, onsite_figures=None, visit_audit=None,
+                      internal_visit_audit=None, export_report=None, export_images=None,
+                      export_status="disabled_by_core_only")
+    write_json(output / "LATEST.json", latest)
     try:
         execute_analysis(run, run_root, cfg, catalog, visit)
     except BaseException as exc:
@@ -265,10 +292,11 @@ def execute_analysis(run, run_root, cfg, catalog, visit):
     def snapshot(final=False):
         state = ("complete_with_issues" if issues.rows or any(
             row["status"] != "complete" for row in stages.values()) else "complete") if final else "running"
-        value = dict(status=state, stages=stages, profile=cfg["profile"],
+        value = dict(status=state, stages=stages, profile=cfg["profile"], core_only=cfg.get("core_only", False),
                      design_version=cfg["design_version"], report=str(run / "report/report.html"),
-                     export_review=str(run_root / "export_review"),
-                     export_status="pending_institution_review" if (run_root / "export_review/EXPORT_MANIFEST.json").is_file() else "unavailable",
+                     export_review=str(run_root / "export_review") if cfg.get("audit", True) else None,
+                     export_status=("pending_institution_review" if (run_root / "export_review/EXPORT_MANIFEST.json").is_file()
+                                    else "unavailable") if cfg.get("audit", True) else "disabled_by_core_only",
                      finished=datetime.now(timezone.utc).isoformat() if final else None)
         save_json(run / "pipeline_status.json", value)
         # Public status contains fixed stage names/status only; exceptions stay internal.
@@ -298,34 +326,52 @@ def execute_analysis(run, run_root, cfg, catalog, visit):
                             "details": "internal/pipeline_issues/issues.jsonl"}
         snapshot()
 
+    def skip(name, reason):
+        target = run / name
+        target.mkdir(parents=True, exist_ok=True)
+        save_json(target / "status.json", {"status": reason})
+        stages[name] = {"status": reason}
+        snapshot()
+
     snapshot()
     # Data's signature is catalog, out, cfg. Later stages share run, out, cfg.
     attempt("data", "fg.data", "prepare", (catalog,))
     attempt("splits", "fg.evaluation", "create_splits", (run / "data",), ("data",))
     attempt("experiment_a", "fg.models", "run_a", (run,), ("splits",))
-    attempt("experiment_b", "fg.cnn", "run_b", (run,), ("splits",))
+    if cfg.get("core_only"):
+        skip("experiment_b", "skipped_by_core_only")
+    else:
+        attempt("experiment_b", "fg.cnn", "run_b", (run,), ("splits",))
     # Supplementary modules decide independently whether they need splits/models.
     attempt("supplementary", "fg.supplementary", "run_supplementary", (run,), ("data",))
     # official wrapper retains its public API but supports split/model-free replay.
-    attempt("official", "fg.official", "run_reference", (run, catalog), ("data",))
+    if cfg.get("core_only"):
+        skip("official", "skipped_by_core_only")
+    else:
+        attempt("official", "fg.official", "run_reference", (run, catalog), ("data",))
     attempt("report", "fg.report", "run_report", (run,))
     if stages["report"]["status"] not in {"complete", "complete_with_issues"}:
         with issues.guard("partial_report"):
             partial_report(run, run / "report", cfg)
     visit.refresh()
-    attempt("export_review", "fg.export_review", "run_export_review", (run,), owner=run_root)
-    if stages["export_review"]["status"] in {"complete", "complete_with_issues"}:
-        attempt("onsite_figures", "fg.onsite_figures", "build_onsite_figures", (run,), owner=run_root,
-                target=run_root / "export_review/onsite_figures")
+    if cfg.get("core_only"):
+        stages["export_review"] = {"status": "skipped_by_core_only"}
+        stages["onsite_figures"] = {"status": "skipped_by_core_only"}
     else:
-        stages["onsite_figures"] = dict(status="unavailable", blocked_by=["export_review"])
+        attempt("export_review", "fg.export_review", "run_export_review", (run,), owner=run_root)
+        if stages["export_review"]["status"] in {"complete", "complete_with_issues"}:
+            attempt("onsite_figures", "fg.onsite_figures", "build_onsite_figures", (run,), owner=run_root,
+                    target=run_root / "export_review/onsite_figures")
+        else:
+            stages["onsite_figures"] = dict(status="unavailable", blocked_by=["export_review"])
     state = snapshot(final=True)
     if stages["report"]["status"] not in {"complete", "complete_with_issues"}:
         with issues.guard("partial_report_final"):
             partial_report(run, run / "report", cfg)
         state = snapshot(final=True)
     issues.finish()
-    print(f"{state.upper()} — 실행 종료. 내부 보고서: {run / 'report/report.html'}", flush=True)
+    prefix = "CORE ANALYSIS COMPLETE" if cfg.get("core_only") else state.upper()
+    print(f"{prefix} — 실행 종료. 내부 보고서: {run / 'report/report.html'}", flush=True)
     print("미산출·제외 내역: internal/pipeline_status.json 및 각 단계 issues.jsonl. 반출은 승인된 집계만.", flush=True)
 
 

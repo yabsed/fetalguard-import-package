@@ -138,7 +138,8 @@ def _run_report(run, out, cfg):
         axes[1].legend()
         save(fig, "loso")
     bstatus = read_json(run / "experiment_b/status.json")
-    title = "MOCK TEST — 학술 결론에 사용 금지" if cfg["profile"] == "mock" else "본선 CTG 자동 분석 결과"
+    title = ("핵심 분석 결과 — CNN·audit 미수행" if cfg.get("core_only") else
+             "MOCK TEST — 학술 결론에 사용 금지" if cfg["profile"] == "mock" else "본선 CTG 자동 분석 결과")
     coverage = read_json(run / "supplementary/outcomes.json")
     outcome_rows = []
     for name, result in coverage.items():
@@ -205,10 +206,11 @@ def _run_report(run, out, cfg):
     links = [(str(p.relative_to(run)), "../" + str(p.relative_to(run))) for p in artifacts]
     markup = ["<!doctype html><meta charset='utf-8'><title>CTG report</title>",
         "<style>body{font:16px system-ui;margin:3em auto;max-width:1200px;color:#20303c}table{border-collapse:collapse;font-size:13px}td,th{padding:8px;border-bottom:1px solid #ddd}img{max-width:100%}.note{background:#f2f6f8;padding:1em}a{color:#176887}</style>",
-        f"<h1>현장 전용 — {html.escape(title)}</h1>", f"<p>{data['records']:,} records / {data['mothers']:,} mothers / {data['segments']:,} usable segments</p>",
-        "<p><a href='../../export_review/onsite_figures/index.html'>현장 결과 읽기: 질문별 그래프와 해설</a></p>",
-        "<p><a href='../visit_audit/index.html'>첫 방문 진단: 데이터 지도 · 학습 종료 근거 · 다음 방문 준비</a></p>",
-        "<div class='note'>" + "".join(f"<p>{html.escape(n)}</p>" for n in notes) + "</div>",
+        f"<h1>현장 전용 — {html.escape(title)}</h1>", f"<p>{data['records']:,} records / {data['mothers']:,} mothers / {data['segments']:,} usable segments</p>"]
+    if cfg.get("audit", True):
+        markup += ["<p><a href='../../export_review/onsite_figures/index.html'>현장 결과 읽기: 질문별 그래프와 해설</a></p>",
+                   "<p><a href='../visit_audit/index.html'>첫 방문 진단: 데이터 지도 · 학습 종료 근거 · 다음 방문 준비</a></p>"]
+    markup += ["<div class='note'>" + "".join(f"<p>{html.escape(n)}</p>" for n in notes) + "</div>",
         f"<p><a href='{html.escape(case_review_path, quote=True)}'>현장 전용 사례 검토: TP/TN/FP/FN 파형·추출 인자·가용 SHAP</a></p>",
         "<h2>연구 질문과 증거</h2>", evidence["hypothesis_evidence"].to_html(index=False, na_rep="미산출", float_format=lambda x: f"{x:.4f}"),
         "<h2>Held-out comparison</h2>", brief.to_html(index=False, float_format=lambda x: f"{x:.4f}"),

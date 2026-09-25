@@ -100,6 +100,31 @@ class ResilienceTests(unittest.TestCase):
             self.assertNotIn("private-record", json.dumps(value))
             self.assertEqual(visit.analysis_status, "complete_with_issues")
 
+    def test_core_only_skips_cnn_official_and_audit_outputs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            internal = root / "internal"
+            internal.mkdir()
+            cfg = self.config()
+            cfg.update(core_only=True, audit=False, cnn=False, official_models=False)
+            visited = []
+
+            def stage(owner, name, action, **kwargs):
+                visited.append(name)
+                return {"status": "complete"}
+
+            visit = SimpleNamespace(refresh=lambda: None)
+            with patch.object(run, "run_stage", side_effect=stage):
+                run.execute_analysis(internal, root, cfg, {}, visit)
+            self.assertEqual(visited, ["data", "splits", "experiment_a", "supplementary", "report"])
+            status = read_json(root / "status.json")
+            self.assertTrue(status["core_only"])
+            self.assertEqual(status["export_status"], "disabled_by_core_only")
+            self.assertEqual(status["stages"]["experiment_b"]["status"], "skipped_by_core_only")
+            self.assertEqual(status["stages"]["official"]["status"], "skipped_by_core_only")
+            self.assertEqual(status["stages"]["export_review"]["status"], "skipped_by_core_only")
+            self.assertFalse((root / "export_review").exists())
+
     def test_no_training_data_reaches_real_html_and_screened_png(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
